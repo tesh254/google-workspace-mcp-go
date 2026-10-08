@@ -1,0 +1,19 @@
+README.md
+  s_80925508eba145::t_9fe1a848e4e2a7 11-20,22,24,168-176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "bce87325d848859bdc6abb6dff71b10f1895f247",
+  "prompts": {},
+  "sessions": {
+    "s_80925508eba145": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ee37dfc96ffenG7YjbRQx6Fver",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
