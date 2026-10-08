@@ -31,6 +31,8 @@ type Config struct {
 	Transport  string
 	SingleUser bool
 	ReadOnly   bool
+	HTTPHost   string
+	HTTPPort   int
 }
 
 // New creates a new MCP server with the given configuration.
