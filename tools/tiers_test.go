@@ -4,45 +4,51 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/magks/google-workspace-mcp-go/server"
 )
 
 // registeredToolNames returns the names of all tools registered on the server.
-func registeredToolNames(t *testing.T, s *mcpserver.MCPServer) map[string]bool {
+func registeredToolNames(t *testing.T, cs *mcp.ClientSession) map[string]bool {
 	t.Helper()
-	ctx := context.Background()
-	resp := s.HandleMessage(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	result, ok := resp.(mcp.JSONRPCResponse)
-	if !ok {
-		t.Fatalf("expected JSONRPCResponse, got %T", resp)
-	}
-	listResult, ok := result.Result.(mcp.ListToolsResult)
-	if !ok {
-		t.Fatalf("expected ListToolsResult, got %T", result.Result)
+	resp, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
 	}
 
-	names := make(map[string]bool, len(listResult.Tools))
-	for _, tool := range listResult.Tools {
+	names := make(map[string]bool, len(resp.Tools))
+	for _, tool := range resp.Tools {
 		names[tool.Name] = true
 	}
 	return names
 }
 
-// newTestServer creates an MCP server and registers all tools, then applies filtering.
-func newTestServer(t *testing.T, cfg server.Config) *mcpserver.MCPServer {
+// newTestSession creates an MCP server, registers all tools, applies
+// filtering, and connects an in-memory client for tools/list checks.
+func newTestSession(t *testing.T, cfg server.Config) *mcp.ClientSession {
 	t.Helper()
 	s := server.New(cfg)
 	RegisterAllTools(s, cfg)
 	FilterTools(s, cfg)
-	return s
+
+	ctx := context.Background()
+	sTransport, cTransport := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, sTransport, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "tiers-test", Version: "v0.0.1"}, nil)
+	cs, err := client.Connect(ctx, cTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
 }
 
 func TestNoFilterLoadsAllTools(t *testing.T) {
-	s := newTestServer(t, server.Config{})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{})
+	names := registeredToolNames(t, cs)
 	// 12 comment tools + 15 Gmail + 16 Drive + 6 Calendar + 15 Docs + 10 Sheets + 4 Chat + 6 Forms + 5 Slides + 12 Tasks + 15 Contacts + 3 Search + 17 AppScript + 1 start_google_auth = 137.
 	if len(names) != 137 {
 		t.Errorf("expected 137 tools with no filter, got %d: %v", len(names), names)
@@ -50,8 +56,8 @@ func TestNoFilterLoadsAllTools(t *testing.T) {
 }
 
 func TestTierCoreFiltering(t *testing.T) {
-	s := newTestServer(t, server.Config{ToolTier: "core"})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{ToolTier: "core"})
+	names := registeredToolNames(t, cs)
 	// Gmail core (4) + Drive core (7) + Calendar core (4) + Docs core (3) + Sheets core (3) + Chat core (3) + Forms core (2) + Slides core (2) + Tasks core (4) + Contacts core (4) + Search core (1) + AppScript core (7) = 44.
 	if len(names) != 44 {
 		t.Errorf("expected 44 tools with core tier, got %d: %v", len(names), names)
@@ -59,8 +65,8 @@ func TestTierCoreFiltering(t *testing.T) {
 }
 
 func TestTierExtendedFiltering(t *testing.T) {
-	s := newTestServer(t, server.Config{ToolTier: "extended"})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{ToolTier: "extended"})
+	names := registeredToolNames(t, cs)
 	// Gmail core+extended (13) + Drive core+extended (14) + Calendar core+extended (6) + Docs core+extended (9) + Sheets core+extended (5) + Chat core+extended (4) + Forms core+extended (3) + Slides core+extended (5) + Tasks core+extended (5) + Contacts core+extended (8) + Search core+extended (2) + AppScript core+extended (17) = 91.
 	if len(names) != 91 {
 		t.Errorf("expected 91 tools with extended tier, got %d: %v", len(names), names)
@@ -68,8 +74,8 @@ func TestTierExtendedFiltering(t *testing.T) {
 }
 
 func TestTierCompleteFiltering(t *testing.T) {
-	s := newTestServer(t, server.Config{ToolTier: "complete"})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{ToolTier: "complete"})
+	names := registeredToolNames(t, cs)
 	// Complete tier = all tools, same as no filter.
 	if len(names) != 137 {
 		t.Errorf("expected 137 tools with complete tier, got %d: %v", len(names), names)
@@ -77,8 +83,8 @@ func TestTierCompleteFiltering(t *testing.T) {
 }
 
 func TestReadOnlyFiltering(t *testing.T) {
-	s := newTestServer(t, server.Config{ReadOnly: true})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{ReadOnly: true})
+	names := registeredToolNames(t, cs)
 	// 3 read comment + 8 Gmail read + 7 Drive read + 3 Calendar read + 6 Docs read + 3 Sheets read + 3 Chat read + 3 Forms read + 3 Slides read + 4 Tasks read + 5 Contacts read + 3 Search read + 8 AppScript read = 59.
 	if len(names) != 59 {
 		t.Errorf("expected 59 tools in read-only mode, got %d: %v", len(names), names)
@@ -152,8 +158,8 @@ func TestReadOnlyFiltering(t *testing.T) {
 
 func TestReadOnlyPlusTierComposition(t *testing.T) {
 	// Read-only + complete tier: all read-only tools survive.
-	s := newTestServer(t, server.Config{ReadOnly: true, ToolTier: "complete"})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{ReadOnly: true, ToolTier: "complete"})
+	names := registeredToolNames(t, cs)
 	if len(names) != 59 {
 		t.Errorf("expected 59 tools with read-only + complete tier, got %d: %v", len(names), names)
 	}
@@ -164,8 +170,8 @@ func TestReadOnlyPlusTierComposition(t *testing.T) {
 	// + Slides core read-only (1: get_presentation) + Tasks core read-only (2: get_task, list_tasks)
 	// + Contacts core read-only (3: search_contacts, get_contact, list_contacts) + Search core read-only (1: search_custom)
 	// + AppScript core read-only (3: list_script_projects, get_script_project, get_script_content) = 24.
-	s2 := newTestServer(t, server.Config{ReadOnly: true, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{ReadOnly: true, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 24 {
 		t.Errorf("expected 24 tools with read-only + core tier, got %d: %v", len(names2), names2)
 	}
@@ -173,8 +179,8 @@ func TestReadOnlyPlusTierComposition(t *testing.T) {
 
 func TestToolsFilterComposesWithServiceFilter(t *testing.T) {
 	// --tools docs with no tier: 15 Docs tools + 4 comment tools = 19.
-	s := newTestServer(t, server.Config{Tools: []string{"docs"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"docs"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 19 {
 		t.Errorf("expected 19 tools with --tools docs, got %d: %v", len(names), names)
 	}
@@ -207,8 +213,8 @@ func TestToolsFilterComposesWithServiceFilter(t *testing.T) {
 
 func TestToolsFilterPlusTier(t *testing.T) {
 	// --tools docs --tool-tier core: get_doc_content + create_doc + modify_doc_text = 3.
-	s := newTestServer(t, server.Config{Tools: []string{"docs"}, ToolTier: "core"})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"docs"}, ToolTier: "core"})
+	names := registeredToolNames(t, cs)
 	if len(names) != 3 {
 		t.Errorf("expected 3 tools with --tools docs --tool-tier core, got %d: %v", len(names), names)
 	}
@@ -216,8 +222,8 @@ func TestToolsFilterPlusTier(t *testing.T) {
 
 func TestToolsFilterPlusReadOnly(t *testing.T) {
 	// --tools docs --read-only: 6 Docs read-only + read_document_comments = 7.
-	s := newTestServer(t, server.Config{Tools: []string{"docs"}, ReadOnly: true})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"docs"}, ReadOnly: true})
+	names := registeredToolNames(t, cs)
 	if len(names) != 7 {
 		t.Errorf("expected 7 tools with --tools docs --read-only, got %d: %v", len(names), names)
 	}
@@ -238,22 +244,22 @@ func TestToolsFilterPlusReadOnly(t *testing.T) {
 
 func TestToolsGmailFiltering(t *testing.T) {
 	// --tools gmail: all 15 Gmail tools (7 read + 8 write) + 1 start_google_auth = 16.
-	s := newTestServer(t, server.Config{Tools: []string{"gmail"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"gmail"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 16 {
 		t.Errorf("expected 16 tools with --tools gmail, got %d: %v", len(names), names)
 	}
 
 	// --tools gmail --tool-tier core: 4 core Gmail tools.
-	s2 := newTestServer(t, server.Config{Tools: []string{"gmail"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"gmail"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 4 {
 		t.Errorf("expected 4 tools with --tools gmail --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools gmail --read-only: 7 Gmail read tools + list_gmail_filters = 8.
-	s3 := newTestServer(t, server.Config{Tools: []string{"gmail"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"gmail"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 8 {
 		t.Errorf("expected 8 tools with --tools gmail --read-only, got %d: %v", len(names3), names3)
 	}
@@ -261,22 +267,22 @@ func TestToolsGmailFiltering(t *testing.T) {
 
 func TestToolsDriveFiltering(t *testing.T) {
 	// --tools drive: 16 Drive tools (7 read + 9 write).
-	s := newTestServer(t, server.Config{Tools: []string{"drive"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"drive"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 16 {
 		t.Errorf("expected 16 tools with --tools drive, got %d: %v", len(names), names)
 	}
 
 	// --tools drive --tool-tier core: 7 Drive core tools.
-	s2 := newTestServer(t, server.Config{Tools: []string{"drive"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"drive"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 7 {
 		t.Errorf("expected 7 tools with --tools drive --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools drive --read-only: 7 Drive read-only tools.
-	s3 := newTestServer(t, server.Config{Tools: []string{"drive"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"drive"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 7 {
 		t.Errorf("expected 7 tools with --tools drive --read-only, got %d: %v", len(names3), names3)
 	}
@@ -284,22 +290,22 @@ func TestToolsDriveFiltering(t *testing.T) {
 
 func TestToolsCalendarFiltering(t *testing.T) {
 	// --tools calendar: all 6 Calendar tools.
-	s := newTestServer(t, server.Config{Tools: []string{"calendar"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"calendar"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 6 {
 		t.Errorf("expected 6 tools with --tools calendar, got %d: %v", len(names), names)
 	}
 
 	// --tools calendar --tool-tier core: 4 core Calendar tools.
-	s2 := newTestServer(t, server.Config{Tools: []string{"calendar"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"calendar"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 4 {
 		t.Errorf("expected 4 tools with --tools calendar --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools calendar --read-only: 3 Calendar read-only tools.
-	s3 := newTestServer(t, server.Config{Tools: []string{"calendar"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"calendar"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 3 {
 		t.Errorf("expected 3 tools with --tools calendar --read-only, got %d: %v", len(names3), names3)
 	}
@@ -307,22 +313,22 @@ func TestToolsCalendarFiltering(t *testing.T) {
 
 func TestToolsDocsFiltering(t *testing.T) {
 	// --tools docs: 15 Docs tools + 4 comment tools = 19.
-	s := newTestServer(t, server.Config{Tools: []string{"docs"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"docs"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 19 {
 		t.Errorf("expected 19 tools with --tools docs, got %d: %v", len(names), names)
 	}
 
 	// --tools docs --tool-tier core: get_doc_content + create_doc + modify_doc_text = 3.
-	s2 := newTestServer(t, server.Config{Tools: []string{"docs"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"docs"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 3 {
 		t.Errorf("expected 3 tools with --tools docs --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools docs --read-only: 6 Docs read-only + read_document_comments = 7.
-	s3 := newTestServer(t, server.Config{Tools: []string{"docs"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"docs"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 7 {
 		t.Errorf("expected 7 tools with --tools docs --read-only, got %d: %v", len(names3), names3)
 	}
@@ -330,8 +336,8 @@ func TestToolsDocsFiltering(t *testing.T) {
 
 func TestToolsSheetsFiltering(t *testing.T) {
 	// --tools sheets: 10 Sheets tools + 4 comment tools = 14.
-	s := newTestServer(t, server.Config{Tools: []string{"sheets"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"sheets"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 14 {
 		t.Errorf("expected 14 tools with --tools sheets, got %d: %v", len(names), names)
 	}
@@ -357,15 +363,15 @@ func TestToolsSheetsFiltering(t *testing.T) {
 	}
 
 	// --tools sheets --tool-tier core: 3 core Sheets tools.
-	s2 := newTestServer(t, server.Config{Tools: []string{"sheets"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"sheets"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 3 {
 		t.Errorf("expected 3 tools with --tools sheets --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools sheets --read-only: 3 Sheets read-only + read_spreadsheet_comments = 4.
-	s3 := newTestServer(t, server.Config{Tools: []string{"sheets"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"sheets"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 4 {
 		t.Errorf("expected 4 tools with --tools sheets --read-only, got %d: %v", len(names3), names3)
 	}
@@ -373,8 +379,8 @@ func TestToolsSheetsFiltering(t *testing.T) {
 
 func TestToolsChatFiltering(t *testing.T) {
 	// --tools chat: all 4 Chat tools.
-	s := newTestServer(t, server.Config{Tools: []string{"chat"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"chat"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 4 {
 		t.Errorf("expected 4 tools with --tools chat, got %d: %v", len(names), names)
 	}
@@ -390,15 +396,15 @@ func TestToolsChatFiltering(t *testing.T) {
 	}
 
 	// --tools chat --tool-tier core: 3 core Chat tools (send_message, get_messages, search_messages).
-	s2 := newTestServer(t, server.Config{Tools: []string{"chat"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"chat"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 3 {
 		t.Errorf("expected 3 tools with --tools chat --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools chat --read-only: 3 Chat read-only tools (list_spaces, get_messages, search_messages).
-	s3 := newTestServer(t, server.Config{Tools: []string{"chat"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"chat"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 3 {
 		t.Errorf("expected 3 tools with --tools chat --read-only, got %d: %v", len(names3), names3)
 	}
@@ -406,8 +412,8 @@ func TestToolsChatFiltering(t *testing.T) {
 
 func TestToolsFormsFiltering(t *testing.T) {
 	// --tools forms: all 6 Forms tools.
-	s := newTestServer(t, server.Config{Tools: []string{"forms"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"forms"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 6 {
 		t.Errorf("expected 6 tools with --tools forms, got %d: %v", len(names), names)
 	}
@@ -425,15 +431,15 @@ func TestToolsFormsFiltering(t *testing.T) {
 	}
 
 	// --tools forms --tool-tier core: 2 core Forms tools (create_form, get_form).
-	s2 := newTestServer(t, server.Config{Tools: []string{"forms"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"forms"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 2 {
 		t.Errorf("expected 2 tools with --tools forms --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools forms --read-only: 3 Forms read-only tools (get_form, get_form_response, list_form_responses).
-	s3 := newTestServer(t, server.Config{Tools: []string{"forms"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"forms"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 3 {
 		t.Errorf("expected 3 tools with --tools forms --read-only, got %d: %v", len(names3), names3)
 	}
@@ -441,8 +447,8 @@ func TestToolsFormsFiltering(t *testing.T) {
 
 func TestToolsSlidesFiltering(t *testing.T) {
 	// --tools slides: 5 Slides tools + 4 comment tools = 9.
-	s := newTestServer(t, server.Config{Tools: []string{"slides"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"slides"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 9 {
 		t.Errorf("expected 9 tools with --tools slides, got %d: %v", len(names), names)
 	}
@@ -463,15 +469,15 @@ func TestToolsSlidesFiltering(t *testing.T) {
 	}
 
 	// --tools slides --tool-tier core: 2 core Slides tools (create_presentation, get_presentation).
-	s2 := newTestServer(t, server.Config{Tools: []string{"slides"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"slides"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 2 {
 		t.Errorf("expected 2 tools with --tools slides --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools slides --read-only: 3 Slides read-only (get_presentation, get_page, get_page_thumbnail) + read_presentation_comments = 4.
-	s3 := newTestServer(t, server.Config{Tools: []string{"slides"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"slides"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 4 {
 		t.Errorf("expected 4 tools with --tools slides --read-only, got %d: %v", len(names3), names3)
 	}
@@ -479,8 +485,8 @@ func TestToolsSlidesFiltering(t *testing.T) {
 
 func TestToolsTasksFiltering(t *testing.T) {
 	// --tools tasks: all 12 Tasks tools.
-	s := newTestServer(t, server.Config{Tools: []string{"tasks"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"tasks"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 12 {
 		t.Errorf("expected 12 tools with --tools tasks, got %d: %v", len(names), names)
 	}
@@ -504,15 +510,15 @@ func TestToolsTasksFiltering(t *testing.T) {
 	}
 
 	// --tools tasks --tool-tier core: 4 core Tasks tools (get_task, list_tasks, create_task, update_task).
-	s2 := newTestServer(t, server.Config{Tools: []string{"tasks"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"tasks"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 4 {
 		t.Errorf("expected 4 tools with --tools tasks --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools tasks --read-only: 4 Tasks read-only tools (get_task, list_tasks, list_task_lists, get_task_list).
-	s3 := newTestServer(t, server.Config{Tools: []string{"tasks"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"tasks"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 4 {
 		t.Errorf("expected 4 tools with --tools tasks --read-only, got %d: %v", len(names3), names3)
 	}
@@ -520,8 +526,8 @@ func TestToolsTasksFiltering(t *testing.T) {
 
 func TestToolsContactsFiltering(t *testing.T) {
 	// --tools contacts: 5 read + 10 write = 15 Contacts tools.
-	s := newTestServer(t, server.Config{Tools: []string{"contacts"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"contacts"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 15 {
 		t.Errorf("expected 15 tools with --tools contacts, got %d: %v", len(names), names)
 	}
@@ -548,15 +554,15 @@ func TestToolsContactsFiltering(t *testing.T) {
 	}
 
 	// --tools contacts --tool-tier core: 4 core Contacts tools (search_contacts, get_contact, list_contacts, create_contact).
-	s2 := newTestServer(t, server.Config{Tools: []string{"contacts"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"contacts"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 4 {
 		t.Errorf("expected 4 tools with --tools contacts --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools contacts --read-only: 5 Contacts read-only tools (all read tools remain, write tools removed).
-	s3 := newTestServer(t, server.Config{Tools: []string{"contacts"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"contacts"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 5 {
 		t.Errorf("expected 5 tools with --tools contacts --read-only, got %d: %v", len(names3), names3)
 	}
@@ -564,8 +570,8 @@ func TestToolsContactsFiltering(t *testing.T) {
 
 func TestToolsSearchFiltering(t *testing.T) {
 	// --tools search: 3 Search tools.
-	s := newTestServer(t, server.Config{Tools: []string{"search"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"search"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 3 {
 		t.Errorf("expected 3 tools with --tools search, got %d: %v", len(names), names)
 	}
@@ -580,15 +586,15 @@ func TestToolsSearchFiltering(t *testing.T) {
 	}
 
 	// --tools search --tool-tier core: 1 core Search tool (search_custom).
-	s2 := newTestServer(t, server.Config{Tools: []string{"search"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"search"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 1 {
 		t.Errorf("expected 1 tool with --tools search --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools search --read-only: all 3 Search tools (all read-only).
-	s3 := newTestServer(t, server.Config{Tools: []string{"search"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"search"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 3 {
 		t.Errorf("expected 3 tools with --tools search --read-only, got %d: %v", len(names3), names3)
 	}
@@ -596,8 +602,8 @@ func TestToolsSearchFiltering(t *testing.T) {
 
 func TestToolsAppScriptFiltering(t *testing.T) {
 	// --tools appscript: 8 read + 9 write = 17 AppScript tools.
-	s := newTestServer(t, server.Config{Tools: []string{"appscript"}})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{Tools: []string{"appscript"}})
+	names := registeredToolNames(t, cs)
 	if len(names) != 17 {
 		t.Errorf("expected 17 tools with --tools appscript, got %d: %v", len(names), names)
 	}
@@ -626,15 +632,15 @@ func TestToolsAppScriptFiltering(t *testing.T) {
 	}
 
 	// --tools appscript --tool-tier core: 7 core AppScript tools.
-	s2 := newTestServer(t, server.Config{Tools: []string{"appscript"}, ToolTier: "core"})
-	names2 := registeredToolNames(t, s2)
+	cs2 := newTestSession(t, server.Config{Tools: []string{"appscript"}, ToolTier: "core"})
+	names2 := registeredToolNames(t, cs2)
 	if len(names2) != 7 {
 		t.Errorf("expected 7 tools with --tools appscript --tool-tier core, got %d: %v", len(names2), names2)
 	}
 
 	// --tools appscript --read-only: 8 AppScript read-only tools (write tools removed).
-	s3 := newTestServer(t, server.Config{Tools: []string{"appscript"}, ReadOnly: true})
-	names3 := registeredToolNames(t, s3)
+	cs3 := newTestSession(t, server.Config{Tools: []string{"appscript"}, ReadOnly: true})
+	names3 := registeredToolNames(t, cs3)
 	if len(names3) != 8 {
 		t.Errorf("expected 8 tools with --tools appscript --read-only, got %d: %v", len(names3), names3)
 	}
@@ -643,8 +649,8 @@ func TestToolsAppScriptFiltering(t *testing.T) {
 func TestStartGoogleAuthOAuth21Disabled(t *testing.T) {
 	// When MCP_ENABLE_OAUTH21 is not set, start_google_auth should be registered.
 	t.Setenv("MCP_ENABLE_OAUTH21", "")
-	s := newTestServer(t, server.Config{})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{})
+	names := registeredToolNames(t, cs)
 	if !names["start_google_auth"] {
 		t.Error("expected start_google_auth to be registered when MCP_ENABLE_OAUTH21 is not set")
 	}
@@ -652,11 +658,11 @@ func TestStartGoogleAuthOAuth21Disabled(t *testing.T) {
 
 func TestStartGoogleAuthOAuth21Enabled(t *testing.T) {
 	// When MCP_ENABLE_OAUTH21=true, start_google_auth should NOT be registered.
+	// newTestSession applies the env var before tool registration, so the
+	// enable-decision is taken with MCP_ENABLE_OAUTH21 active.
 	t.Setenv("MCP_ENABLE_OAUTH21", "true")
-	s := server.New(server.Config{})
-	RegisterAllTools(s, server.Config{})
-	FilterTools(s, server.Config{})
-	names := registeredToolNames(t, s)
+	cs := newTestSession(t, server.Config{})
+	names := registeredToolNames(t, cs)
 	if names["start_google_auth"] {
 		t.Error("expected start_google_auth to NOT be registered when MCP_ENABLE_OAUTH21=true")
 	}

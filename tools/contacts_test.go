@@ -432,10 +432,10 @@ func TestContactsBuildPersonBody(t *testing.T) {
 
 func TestContactsUpdatePersonFields(t *testing.T) {
 	tests := []struct {
-		name           string
-		person         *people.Person
-		wantFields     []string
-		wantNotFields  []string
+		name          string
+		person        *people.Person
+		wantFields    []string
+		wantNotFields []string
 	}{
 		{
 			"empty person",

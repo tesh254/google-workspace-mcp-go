@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/google/jsonschema-go/jsonschema"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	slides "google.golang.org/api/slides/v1"
 
 	"github.com/magks/google-workspace-mcp-go/internal/google"
@@ -25,7 +25,7 @@ func mapToStruct(m map[string]any, out any) error {
 }
 
 // RegisterSlidesTools registers all Slides tools with the MCP server.
-func RegisterSlidesTools(s *mcpserver.MCPServer, _ server.Config) {
+func RegisterSlidesTools(s *mcp.Server, _ server.Config) {
 	getClient := clientFuncFromCache(google.DefaultClientCache())
 
 	registerCreatePresentation(s, getClient)
@@ -53,32 +53,40 @@ func newSlidesService(ctx context.Context, getClient httpClientFunc, email strin
 
 // --- create_presentation ---
 
-func registerCreatePresentation(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_presentation",
-		mcp.WithDescription("Create a new Google Slides presentation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("title", mcp.Description("The title for the new presentation. Defaults to \"Untitled Presentation\".")),
-	)
-	s.AddTool(tool, handleCreatePresentation(getClient))
+func registerCreatePresentation(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "create_presentation",
+		Description: "Create a new Google Slides presentation.",
+	}
+	mcp.AddTool(s, tool, handleCreatePresentation(getClient))
 }
 
-func handleCreatePresentation(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// createPresentationIn is the input schema for create_presentation.
+type createPresentationIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	Title           string `json:"title,omitempty" jsonschema:"The title for the new presentation. Defaults to \"Untitled Presentation\"."`
+}
+
+func handleCreatePresentation(getClient httpClientFunc) mcp.ToolHandlerFor[createPresentationIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createPresentationIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		title := request.GetString("title", "Untitled Presentation")
+		title := in.Title
+		if title == "" {
+			title = "Untitled Presentation"
+		}
 
 		svc, err := newSlidesService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		pres := &slides.Presentation{Title: title}
 		created, err := svc.Presentations.Create(pres).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating presentation: %v", err)), nil
+			return nil, nil, toolErr("creating presentation: %v", err)
 		}
 
 		presID := created.PresentationId
@@ -91,40 +99,42 @@ func handleCreatePresentation(getClient httpClientFunc) mcpserver.ToolHandlerFun
 - URL: %s
 - Slides: %d slide(s) created`, email, title, presID, presURL, slideCount)
 
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
 // --- get_presentation ---
 
-func registerGetPresentation(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_presentation",
-		mcp.WithDescription("Get details about a Google Slides presentation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("presentation_id", mcp.Required(), mcp.Description("The ID of the presentation to retrieve.")),
-	)
-	s.AddTool(tool, handleGetPresentation(getClient))
+func registerGetPresentation(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_presentation",
+		Description: "Get details about a Google Slides presentation.",
+	}
+	mcp.AddTool(s, tool, handleGetPresentation(getClient))
 }
 
-func handleGetPresentation(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// getPresentationIn is the input schema for get_presentation.
+type getPresentationIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	PresentationID  string `json:"presentation_id" jsonschema:"The ID of the presentation to retrieve."`
+}
+
+func handleGetPresentation(getClient httpClientFunc) mcp.ToolHandlerFor[getPresentationIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getPresentationIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		presID, err := request.RequireString("presentation_id")
-		if err != nil {
-			return mcp.NewToolResultError("presentation_id is required"), nil
-		}
+		presID := in.PresentationID
 
 		svc, err := newSlidesService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		pres, err := svc.Presentations.Get(presID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting presentation: %v", err)), nil
+			return nil, nil, toolErr("getting presentation: %v", err)
 		}
 
 		title := pres.Title
@@ -178,7 +188,7 @@ func handleGetPresentation(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 Slides Breakdown:
 %s`, email, title, presID, presURL, len(pres.Slides), pageSizeStr, slidesBreakdown)
 
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
@@ -241,40 +251,37 @@ func extractSlideText(slide *slides.Page) string {
 
 // --- batch_update_presentation ---
 
-func registerBatchUpdatePresentation(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("batch_update_presentation",
-		mcp.WithDescription("Apply batch updates to a Google Slides presentation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("presentation_id", mcp.Required(), mcp.Description("The ID of the presentation to update.")),
-		mcp.WithArray("requests", mcp.Required(), mcp.Description("List of update requests to apply."), mcp.Items(map[string]any{"type": "object"})),
-	)
-	s.AddTool(tool, handleBatchUpdatePresentation(getClient))
+func registerBatchUpdatePresentation(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "batch_update_presentation",
+		Description: "Apply batch updates to a Google Slides presentation.",
+	}
+	mcp.AddTool(s, tool, handleBatchUpdatePresentation(getClient))
 }
 
-func handleBatchUpdatePresentation(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		presID, err := request.RequireString("presentation_id")
-		if err != nil {
-			return mcp.NewToolResultError("presentation_id is required"), nil
-		}
+// batchUpdatePresentationIn is the input schema for batch_update_presentation.
+type batchUpdatePresentationIn struct {
+	UserGoogleEmail string           `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	PresentationID  string           `json:"presentation_id" jsonschema:"The ID of the presentation to update."`
+	Requests        []map[string]any `json:"requests" jsonschema:"List of update requests to apply."`
+}
 
-		args := request.GetArguments()
-		rawRequests, ok := args["requests"]
-		if !ok {
-			return mcp.NewToolResultError("requests is required"), nil
+func handleBatchUpdatePresentation(getClient httpClientFunc) mcp.ToolHandlerFor[batchUpdatePresentationIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in batchUpdatePresentationIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		requestsList, ok := rawRequests.([]any)
-		if !ok {
-			return mcp.NewToolResultError("requests must be an array"), nil
+		presID := in.PresentationID
+
+		requestsList := in.Requests
+		if len(requestsList) == 0 {
+			return nil, nil, toolErr("requests is required")
 		}
 
 		svc, err := newSlidesService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Convert the raw request maps into slides.Request objects.
@@ -282,14 +289,10 @@ func handleBatchUpdatePresentation(getClient httpClientFunc) mcpserver.ToolHandl
 		// a JSON round-trip approach: marshal the raw maps to JSON, then
 		// unmarshal into the typed slides.Request structs.
 		var reqs []*slides.Request
-		for _, raw := range requestsList {
-			reqMap, ok := raw.(map[string]any)
-			if !ok {
-				return mcp.NewToolResultError("each request must be an object"), nil
-			}
+		for _, reqMap := range requestsList {
 			req := &slides.Request{}
 			if err := mapToStruct(reqMap, req); err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("parsing request: %v", err)), nil
+				return nil, nil, toolErr("parsing request: %v", err)
 			}
 			reqs = append(reqs, req)
 		}
@@ -300,7 +303,7 @@ func handleBatchUpdatePresentation(getClient httpClientFunc) mcpserver.ToolHandl
 
 		resp, err := svc.Presentations.BatchUpdate(presID, batchReq).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("batch updating presentation: %v", err)), nil
+			return nil, nil, toolErr("batch updating presentation: %v", err)
 		}
 
 		presURL := fmt.Sprintf("https://docs.google.com/presentation/d/%s/edit", presID)
@@ -333,45 +336,44 @@ func handleBatchUpdatePresentation(getClient httpClientFunc) mcpserver.ToolHandl
 			}
 		}
 
-		return mcp.NewToolResultText(out.String()), nil
+		return textResult(out.String())
 	}
 }
 
 // --- get_page ---
 
-func registerGetPage(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_page",
-		mcp.WithDescription("Get details about a specific page (slide) in a presentation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("presentation_id", mcp.Required(), mcp.Description("The ID of the presentation.")),
-		mcp.WithString("page_object_id", mcp.Required(), mcp.Description("The object ID of the page/slide to retrieve.")),
-	)
-	s.AddTool(tool, handleGetPage(getClient))
+func registerGetPage(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_page",
+		Description: "Get details about a specific page (slide) in a presentation.",
+	}
+	mcp.AddTool(s, tool, handleGetPage(getClient))
 }
 
-func handleGetPage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// getPageIn is the input schema for get_page.
+type getPageIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	PresentationID  string `json:"presentation_id" jsonschema:"The ID of the presentation."`
+	PageObjectID    string `json:"page_object_id" jsonschema:"The object ID of the page/slide to retrieve."`
+}
+
+func handleGetPage(getClient httpClientFunc) mcp.ToolHandlerFor[getPageIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getPageIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		presID, err := request.RequireString("presentation_id")
-		if err != nil {
-			return mcp.NewToolResultError("presentation_id is required"), nil
-		}
-		pageID, err := request.RequireString("page_object_id")
-		if err != nil {
-			return mcp.NewToolResultError("page_object_id is required"), nil
-		}
+		presID := in.PresentationID
+		pageID := in.PageObjectID
 
 		svc, err := newSlidesService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		page, err := svc.Presentations.Pages.Get(presID, pageID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting page: %v", err)), nil
+			return nil, nil, toolErr("getting page: %v", err)
 		}
 
 		pageType := page.PageType
@@ -420,42 +422,46 @@ func handleGetPage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 Page Elements:
 %s`, email, presID, pageID, pageType, len(page.PageElements), elementsBreakdown)
 
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
 // --- get_page_thumbnail ---
 
-func registerGetPageThumbnail(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_page_thumbnail",
-		mcp.WithDescription("Generate a thumbnail URL for a specific page (slide) in a presentation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("presentation_id", mcp.Required(), mcp.Description("The ID of the presentation.")),
-		mcp.WithString("page_object_id", mcp.Required(), mcp.Description("The object ID of the page/slide.")),
-		mcp.WithString("thumbnail_size", mcp.Description("Size of thumbnail (\"LARGE\", \"MEDIUM\", \"SMALL\"). Defaults to \"MEDIUM\"."), mcp.Enum("LARGE", "MEDIUM", "SMALL")),
-	)
-	s.AddTool(tool, handleGetPageThumbnail(getClient))
+func registerGetPageThumbnail(s *mcp.Server, getClient httpClientFunc) {
+	tool := inputSchema[getPageThumbnailIn](&mcp.Tool{
+		Name:        "get_page_thumbnail",
+		Description: "Generate a thumbnail URL for a specific page (slide) in a presentation.",
+	}, func(sch *jsonschema.Schema) {
+		setEnum(sch, "thumbnail_size", "LARGE", "MEDIUM", "SMALL")
+	})
+	mcp.AddTool(s, tool, handleGetPageThumbnail(getClient))
 }
 
-func handleGetPageThumbnail(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// getPageThumbnailIn is the input schema for get_page_thumbnail.
+type getPageThumbnailIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	PresentationID  string `json:"presentation_id" jsonschema:"The ID of the presentation."`
+	PageObjectID    string `json:"page_object_id" jsonschema:"The object ID of the page/slide."`
+	ThumbnailSize   string `json:"thumbnail_size,omitempty" jsonschema:"Size of thumbnail (\"LARGE\", \"MEDIUM\", \"SMALL\"). Defaults to \"MEDIUM\"."`
+}
+
+func handleGetPageThumbnail(getClient httpClientFunc) mcp.ToolHandlerFor[getPageThumbnailIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getPageThumbnailIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		presID, err := request.RequireString("presentation_id")
-		if err != nil {
-			return mcp.NewToolResultError("presentation_id is required"), nil
+		presID := in.PresentationID
+		pageID := in.PageObjectID
+		thumbnailSize := in.ThumbnailSize
+		if thumbnailSize == "" {
+			thumbnailSize = "MEDIUM"
 		}
-		pageID, err := request.RequireString("page_object_id")
-		if err != nil {
-			return mcp.NewToolResultError("page_object_id is required"), nil
-		}
-		thumbnailSize := request.GetString("thumbnail_size", "MEDIUM")
 
 		svc, err := newSlidesService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		thumbnail, err := svc.Presentations.Pages.GetThumbnail(presID, pageID).
@@ -463,7 +469,7 @@ func handleGetPageThumbnail(getClient httpClientFunc) mcpserver.ToolHandlerFunc 
 			ThumbnailPropertiesMimeType("PNG").
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting page thumbnail: %v", err)), nil
+			return nil, nil, toolErr("getting page thumbnail: %v", err)
 		}
 
 		thumbnailURL := thumbnail.ContentUrl
@@ -476,6 +482,6 @@ func handleGetPageThumbnail(getClient httpClientFunc) mcpserver.ToolHandlerFunc 
 
 You can view or download the thumbnail using the provided URL.`, email, presID, pageID, thumbnailSize, thumbnailURL)
 
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }

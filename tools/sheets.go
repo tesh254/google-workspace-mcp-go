@@ -8,8 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	drive "google.golang.org/api/drive/v3"
 	sheets "google.golang.org/api/sheets/v4"
 
@@ -18,7 +17,7 @@ import (
 )
 
 // RegisterSheetsTools registers all Sheets tools with the MCP server.
-func RegisterSheetsTools(s *mcpserver.MCPServer, _ server.Config) {
+func RegisterSheetsTools(s *mcp.Server, _ server.Config) {
 	getClient := clientFuncFromCache(google.DefaultClientCache())
 
 	// Read tools
@@ -55,35 +54,35 @@ func newSheetsService(ctx context.Context, getClient httpClientFunc, email strin
 // --- A1 range parsing helpers ---
 
 var (
-	a1PartRegex       = regexp.MustCompile(`^([A-Za-z]*)(\d*)$`)
-	sheetTitleSafeRE  = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+	a1PartRegex      = regexp.MustCompile(`^([A-Za-z]*)(\d*)$`)
+	sheetTitleSafeRE = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 )
 
 // conditionTypes is the set of valid conditional formatting condition types.
 var conditionTypes = map[string]bool{
-	"NUMBER_GREATER":        true,
+	"NUMBER_GREATER":         true,
 	"NUMBER_GREATER_THAN_EQ": true,
-	"NUMBER_LESS":           true,
-	"NUMBER_LESS_THAN_EQ":   true,
-	"NUMBER_EQ":             true,
-	"NUMBER_NOT_EQ":         true,
-	"TEXT_CONTAINS":         true,
-	"TEXT_NOT_CONTAINS":     true,
-	"TEXT_STARTS_WITH":      true,
-	"TEXT_ENDS_WITH":        true,
-	"TEXT_EQ":               true,
-	"DATE_BEFORE":           true,
-	"DATE_ON_OR_BEFORE":     true,
-	"DATE_AFTER":            true,
-	"DATE_ON_OR_AFTER":      true,
-	"DATE_EQ":               true,
-	"DATE_NOT_EQ":           true,
-	"DATE_BETWEEN":          true,
-	"DATE_NOT_BETWEEN":      true,
-	"NOT_BLANK":             true,
-	"BLANK":                 true,
-	"CUSTOM_FORMULA":        true,
-	"ONE_OF_RANGE":          true,
+	"NUMBER_LESS":            true,
+	"NUMBER_LESS_THAN_EQ":    true,
+	"NUMBER_EQ":              true,
+	"NUMBER_NOT_EQ":          true,
+	"TEXT_CONTAINS":          true,
+	"TEXT_NOT_CONTAINS":      true,
+	"TEXT_STARTS_WITH":       true,
+	"TEXT_ENDS_WITH":         true,
+	"TEXT_EQ":                true,
+	"DATE_BEFORE":            true,
+	"DATE_ON_OR_BEFORE":      true,
+	"DATE_AFTER":             true,
+	"DATE_ON_OR_AFTER":       true,
+	"DATE_EQ":                true,
+	"DATE_NOT_EQ":            true,
+	"DATE_BETWEEN":           true,
+	"DATE_NOT_BETWEEN":       true,
+	"NOT_BLANK":              true,
+	"BLANK":                  true,
+	"CUSTOM_FORMULA":         true,
+	"ONE_OF_RANGE":           true,
 }
 
 // gradientPointTypes is the set of valid gradient point types.
@@ -639,26 +638,38 @@ func gradientPointToInterpolation(pt gradientPoint) *sheets.InterpolationPoint {
 
 // --- list_spreadsheets ---
 
-func registerListSpreadsheets(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_spreadsheets",
-		mcp.WithDescription("Lists spreadsheets from Google Drive that the user has access to.\n\nArgs:\n    user_google_email (str): The user's Google email address. Required.\n    max_results (int): Maximum number of spreadsheets to return. Defaults to 25.\n\nReturns:\n    str: A formatted list of spreadsheet files (name, ID, modified time)."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address")),
-		mcp.WithNumber("max_results", mcp.Description("Maximum number of spreadsheets to return (default 25)")),
-	)
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerListSpreadsheets(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "list_spreadsheets",
+		Description: "Lists spreadsheets from Google Drive that the user has access to.",
+	}
+	mcp.AddTool(s, tool, handleListSpreadsheets(getClient))
+}
+
+// listSpreadsheetsIn is the input schema for list_spreadsheets.
+type listSpreadsheetsIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address"`
+	MaxResults      int    `json:"max_results,omitempty" jsonschema:"Maximum number of spreadsheets to return (default 25)"`
+}
+
+func handleListSpreadsheets(getClient httpClientFunc) mcp.ToolHandlerFor[listSpreadsheetsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listSpreadsheetsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		maxResults := request.GetInt("max_results", 25)
+		maxResults := in.MaxResults
+		if maxResults == 0 {
+			maxResults = 25
+		}
 
 		httpClient, err := getClient(ctx, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authentication failed: %v", err)), nil
+			return nil, nil, toolErr("authentication failed: %v", err)
 		}
 		drvSvc, err := drive.New(httpClient)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating Drive service: %v", err)), nil
+			return nil, nil, toolErr("creating Drive service: %v", err)
 		}
 
 		resp, err := drvSvc.Files.List().
@@ -670,12 +681,12 @@ func registerListSpreadsheets(s *mcpserver.MCPServer, getClient httpClientFunc) 
 			IncludeItemsFromAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing spreadsheets: %v", err)), nil
+			return nil, nil, toolErr("listing spreadsheets: %v", err)
 		}
 
 		files := resp.Files
 		if len(files) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No spreadsheets found for %s.", email)), nil
+			return textResult(fmt.Sprintf("No spreadsheets found for %s.", email))
 		}
 
 		var b strings.Builder
@@ -691,38 +702,44 @@ func registerListSpreadsheets(s *mcpserver.MCPServer, getClient httpClientFunc) 
 			}
 			fmt.Fprintf(&b, "\n- \"%s\" (ID: %s) | Modified: %s | Link: %s", f.Name, f.Id, modified, link)
 		}
-		return mcp.NewToolResultText(b.String()), nil
-	})
+		return textResult(b.String())
+	}
 }
 
 // --- get_spreadsheet_info ---
 
-func registerGetSpreadsheetInfo(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_spreadsheet_info",
-		mcp.WithDescription("Gets information about a specific spreadsheet including its sheets.\n\nArgs:\n    user_google_email (str): The user's Google email address. Required.\n    spreadsheet_id (str): The ID of the spreadsheet to get info for. Required.\n\nReturns:\n    str: Formatted spreadsheet information including title, locale, and sheets list."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address")),
-		mcp.WithString("spreadsheet_id", mcp.Required(), mcp.Description("The ID of the spreadsheet")),
-	)
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerGetSpreadsheetInfo(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_spreadsheet_info",
+		Description: "Gets information about a specific spreadsheet including its sheets.",
+	}
+	mcp.AddTool(s, tool, handleGetSpreadsheetInfo(getClient))
+}
+
+// getSpreadsheetInfoIn is the input schema for get_spreadsheet_info.
+type getSpreadsheetInfoIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address"`
+	SpreadsheetID   string `json:"spreadsheet_id" jsonschema:"The ID of the spreadsheet"`
+}
+
+func handleGetSpreadsheetInfo(getClient httpClientFunc) mcp.ToolHandlerFor[getSpreadsheetInfoIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getSpreadsheetInfoIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		spreadsheetID, err := request.RequireString("spreadsheet_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		spreadsheetID := in.SpreadsheetID
 
 		svc, err := newSheetsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authentication failed: %v", err)), nil
+			return nil, nil, toolErr("authentication failed: %v", err)
 		}
 
 		spreadsheet, err := svc.Spreadsheets.Get(spreadsheetID).
 			Fields("spreadsheetId,properties(title,locale),sheets(properties(title,sheetId,gridProperties(rowCount,columnCount)),conditionalFormats)").
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting spreadsheet info: %v", err)), nil
+			return nil, nil, toolErr("getting spreadsheet info: %v", err)
 		}
 
 		title := spreadsheet.Properties.Title
@@ -768,43 +785,52 @@ func registerGetSpreadsheetInfo(s *mcpserver.MCPServer, getClient httpClientFunc
 		result := fmt.Sprintf("Spreadsheet: \"%s\" (ID: %s) | Locale: %s\nSheets (%d):\n%s",
 			title, spreadsheetID, locale, len(spreadsheet.Sheets), sheetsSection)
 
-		return mcp.NewToolResultText(result), nil
-	})
+		return textResult(result)
+	}
 }
 
 // --- read_sheet_values ---
 
-func registerReadSheetValues(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("read_sheet_values",
-		mcp.WithDescription("Reads values from a specific range in a Google Sheet.\n\nArgs:\n    user_google_email (str): The user's Google email address. Required.\n    spreadsheet_id (str): The ID of the spreadsheet. Required.\n    range_name (str): The range to read (e.g., \"Sheet1!A1:D10\", \"A1:D10\"). Defaults to \"A1:Z1000\".\n\nReturns:\n    str: The formatted values from the specified range."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address")),
-		mcp.WithString("spreadsheet_id", mcp.Required(), mcp.Description("The ID of the spreadsheet")),
-		mcp.WithString("range_name", mcp.Description("The range to read (default A1:Z1000)")),
-	)
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerReadSheetValues(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "read_sheet_values",
+		Description: "Reads values from a specific range in a Google Sheet.",
+	}
+	mcp.AddTool(s, tool, handleReadSheetValues(getClient))
+}
+
+// readSheetValuesIn is the input schema for read_sheet_values.
+type readSheetValuesIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address"`
+	SpreadsheetID   string `json:"spreadsheet_id" jsonschema:"The ID of the spreadsheet"`
+	RangeName       string `json:"range_name,omitempty" jsonschema:"The range to read (default A1:Z1000)"`
+}
+
+func handleReadSheetValues(getClient httpClientFunc) mcp.ToolHandlerFor[readSheetValuesIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in readSheetValuesIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		spreadsheetID, err := request.RequireString("spreadsheet_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		spreadsheetID := in.SpreadsheetID
+		rangeName := in.RangeName
+		if rangeName == "" {
+			rangeName = "A1:Z1000"
 		}
-		rangeName := request.GetString("range_name", "A1:Z1000")
 
 		svc, err := newSheetsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authentication failed: %v", err)), nil
+			return nil, nil, toolErr("authentication failed: %v", err)
 		}
 
 		resp, err := svc.Spreadsheets.Values.Get(spreadsheetID, rangeName).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("reading sheet values: %v", err)), nil
+			return nil, nil, toolErr("reading sheet values: %v", err)
 		}
 
 		values := resp.Values
 		if len(values) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No data found in range '%s' for %s.", rangeName, email)), nil
+			return textResult(fmt.Sprintf("No data found in range '%s' for %s.", rangeName, email))
 		}
 
 		var b strings.Builder
@@ -831,84 +857,89 @@ func registerReadSheetValues(s *mcpserver.MCPServer, getClient httpClientFunc) {
 			fmt.Fprintf(&b, "\n... and %d more rows", len(values)-50)
 		}
 
-		return mcp.NewToolResultText(b.String()), nil
-	})
+		return textResult(b.String())
+	}
 }
 
 // --- modify_sheet_values ---
 
-func registerModifySheetValues(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("modify_sheet_values",
-		mcp.WithDescription("Modifies values in a specific range of a Google Sheet - can write, update, or clear values.\n\nArgs:\n    user_google_email (str): The user's Google email address. Required.\n    spreadsheet_id (str): The ID of the spreadsheet. Required.\n    range_name (str): The range to modify (e.g., \"Sheet1!A1:D10\"). Required.\n    values (Optional[str|array]): 2D array of values or JSON string. Required unless clear_values=True.\n    value_input_option (str): How to interpret input (\"RAW\" or \"USER_ENTERED\"). Defaults to \"USER_ENTERED\".\n    clear_values (bool): If True, clears the range. Defaults to False.\n\nReturns:\n    str: Confirmation of the modification."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address")),
-		mcp.WithString("spreadsheet_id", mcp.Required(), mcp.Description("The ID of the spreadsheet")),
-		mcp.WithString("range_name", mcp.Required(), mcp.Description("The range to modify")),
-		mcp.WithString("values", mcp.Description("2D array of values as JSON string")),
-		mcp.WithString("value_input_option", mcp.Description("RAW or USER_ENTERED (default USER_ENTERED)")),
-		mcp.WithBoolean("clear_values", mcp.Description("If true, clears the range instead of writing")),
-	)
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerModifySheetValues(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "modify_sheet_values",
+		Description: "Modifies values in a specific range of a Google Sheet - can write, update, or clear values.",
+	}
+	mcp.AddTool(s, tool, handleModifySheetValues(getClient))
+}
+
+// modifySheetValuesIn is the input schema for modify_sheet_values.
+type modifySheetValuesIn struct {
+	UserGoogleEmail  string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address"`
+	SpreadsheetID    string `json:"spreadsheet_id" jsonschema:"The ID of the spreadsheet"`
+	RangeName        string `json:"range_name" jsonschema:"The range to modify"`
+	Values           any    `json:"values,omitempty" jsonschema:"2D array of values as JSON string"`
+	ValueInputOption string `json:"value_input_option,omitempty" jsonschema:"RAW or USER_ENTERED (default USER_ENTERED)"`
+	ClearValues      bool   `json:"clear_values,omitempty" jsonschema:"If true, clears the range instead of writing"`
+}
+
+func handleModifySheetValues(getClient httpClientFunc) mcp.ToolHandlerFor[modifySheetValuesIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in modifySheetValuesIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		spreadsheetID, err := request.RequireString("spreadsheet_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		spreadsheetID := in.SpreadsheetID
+		rangeName := in.RangeName
+		valueInputOption := in.ValueInputOption
+		if valueInputOption == "" {
+			valueInputOption = "USER_ENTERED"
 		}
-		rangeName, err := request.RequireString("range_name")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		valueInputOption := request.GetString("value_input_option", "USER_ENTERED")
-		clearValues := getBool(request, "clear_values", false)
+		clearValues := in.ClearValues
 
 		svc, err := newSheetsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authentication failed: %v", err)), nil
+			return nil, nil, toolErr("authentication failed: %v", err)
 		}
 
 		if clearValues {
 			resp, err := svc.Spreadsheets.Values.Clear(spreadsheetID, rangeName, &sheets.ClearValuesRequest{}).Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("clearing range: %v", err)), nil
+				return nil, nil, toolErr("clearing range: %v", err)
 			}
 			clearedRange := rangeName
 			if resp.ClearedRange != "" {
 				clearedRange = resp.ClearedRange
 			}
-			return mcp.NewToolResultText(
+			return textResult(
 				fmt.Sprintf("Successfully cleared range '%s' in spreadsheet %s for %s.",
-					clearedRange, spreadsheetID, email)), nil
+					clearedRange, spreadsheetID, email))
 		}
 
 		// Parse values
-		args := request.GetArguments()
-		rawValues, hasValues := args["values"]
-		if !hasValues || rawValues == nil {
-			return mcp.NewToolResultError("either 'values' must be provided or 'clear_values' must be true"), nil
+		rawValues := in.Values
+		if rawValues == nil {
+			return nil, nil, toolErr("either 'values' must be provided or 'clear_values' must be true")
 		}
 
 		var values [][]any
 		switch v := rawValues.(type) {
 		case string:
 			if err := json.Unmarshal([]byte(v), &values); err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("invalid JSON format for values: %v", err)), nil
+				return nil, nil, toolErr("invalid JSON format for values: %v", err)
 			}
 		case []any:
 			for i, row := range v {
 				rowSlice, ok := row.([]any)
 				if !ok {
-					return mcp.NewToolResultError(fmt.Sprintf("row %d must be a list", i)), nil
+					return nil, nil, toolErr("row %d must be a list", i)
 				}
 				values = append(values, rowSlice)
 			}
 		default:
-			return mcp.NewToolResultError("values must be a 2D array or JSON string"), nil
+			return nil, nil, toolErr("values must be a 2D array or JSON string")
 		}
 
 		if len(values) == 0 {
-			return mcp.NewToolResultError("either 'values' must be provided or 'clear_values' must be true"), nil
+			return nil, nil, toolErr("either 'values' must be provided or 'clear_values' must be true")
 		}
 
 		// Convert [][]any to [][]interface{} for the API
@@ -929,54 +960,58 @@ func registerModifySheetValues(s *mcpserver.MCPServer, getClient httpClientFunc)
 			ResponseValueRenderOption("FORMATTED_VALUE").
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("updating sheet values: %v", err)), nil
+			return nil, nil, toolErr("updating sheet values: %v", err)
 		}
 
 		result := fmt.Sprintf("Successfully updated range '%s' in spreadsheet %s for %s. Updated: %d cells, %d rows, %d columns.",
 			rangeName, spreadsheetID, email, resp.UpdatedCells, resp.UpdatedRows, resp.UpdatedColumns)
 
-		return mcp.NewToolResultText(result), nil
-	})
+		return textResult(result)
+	}
 }
 
 // --- format_sheet_range ---
 
-func registerFormatSheetRange(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("format_sheet_range",
-		mcp.WithDescription("Applies formatting to a range: background/text color and number/date formats.\n\nColors accept hex strings (#RRGGBB). Number formats follow Sheets types (e.g., NUMBER, CURRENCY, DATE, TIME, DATE_TIME, PERCENT, TEXT, SCIENTIFIC).\n\nArgs:\n    user_google_email (str): The user's Google email address. Required.\n    spreadsheet_id (str): The ID of the spreadsheet. Required.\n    range_name (str): A1-style range. Required.\n    background_color (Optional[str]): Hex background color.\n    text_color (Optional[str]): Hex text color.\n    number_format_type (Optional[str]): Sheets number format type.\n    number_format_pattern (Optional[str]): Custom pattern.\n\nReturns:\n    str: Confirmation of the applied formatting."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address")),
-		mcp.WithString("spreadsheet_id", mcp.Required(), mcp.Description("The ID of the spreadsheet")),
-		mcp.WithString("range_name", mcp.Required(), mcp.Description("A1-style range")),
-		mcp.WithString("background_color", mcp.Description("Hex background color (e.g., #FFEECC)")),
-		mcp.WithString("text_color", mcp.Description("Hex text color (e.g., #000000)")),
-		mcp.WithString("number_format_type", mcp.Description("Sheets number format type (e.g., DATE)")),
-		mcp.WithString("number_format_pattern", mcp.Description("Custom pattern for the number format")),
-	)
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerFormatSheetRange(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name: "format_sheet_range",
+		Description: "Applies formatting to a range: background/text color and number/date formats.\n\n" +
+			"Colors accept hex strings (#RRGGBB). Number formats follow Sheets types (e.g., NUMBER, CURRENCY, DATE, TIME, DATE_TIME, PERCENT, TEXT, SCIENTIFIC).",
+	}
+	mcp.AddTool(s, tool, handleFormatSheetRange(getClient))
+}
+
+// formatSheetRangeIn is the input schema for format_sheet_range.
+type formatSheetRangeIn struct {
+	UserGoogleEmail     string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address"`
+	SpreadsheetID       string `json:"spreadsheet_id" jsonschema:"The ID of the spreadsheet"`
+	RangeName           string `json:"range_name" jsonschema:"A1-style range"`
+	BackgroundColor     string `json:"background_color,omitempty" jsonschema:"Hex background color (e.g., #FFEECC)"`
+	TextColor           string `json:"text_color,omitempty" jsonschema:"Hex text color (e.g., #000000)"`
+	NumberFormatType    string `json:"number_format_type,omitempty" jsonschema:"Sheets number format type (e.g., DATE)"`
+	NumberFormatPattern string `json:"number_format_pattern,omitempty" jsonschema:"Custom pattern for the number format"`
+}
+
+func handleFormatSheetRange(getClient httpClientFunc) mcp.ToolHandlerFor[formatSheetRangeIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in formatSheetRangeIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		spreadsheetID, err := request.RequireString("spreadsheet_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		rangeName, err := request.RequireString("range_name")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		bgColor := request.GetString("background_color", "")
-		txtColor := request.GetString("text_color", "")
-		numFmtType := request.GetString("number_format_type", "")
-		numFmtPattern := request.GetString("number_format_pattern", "")
+		spreadsheetID := in.SpreadsheetID
+		rangeName := in.RangeName
+		bgColor := in.BackgroundColor
+		txtColor := in.TextColor
+		numFmtType := in.NumberFormatType
+		numFmtPattern := in.NumberFormatPattern
 
 		if bgColor == "" && txtColor == "" && numFmtType == "" {
-			return mcp.NewToolResultError("provide at least one of background_color, text_color, or number_format_type"), nil
+			return nil, nil, toolErr("provide at least one of background_color, text_color, or number_format_type")
 		}
 
 		svc, err := newSheetsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authentication failed: %v", err)), nil
+			return nil, nil, toolErr("authentication failed: %v", err)
 		}
 
 		// Get sheet metadata for A1 parsing
@@ -984,7 +1019,7 @@ func registerFormatSheetRange(s *mcpserver.MCPServer, getClient httpClientFunc) 
 			Fields("sheets(properties(sheetId,title))").
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting spreadsheet metadata: %v", err)), nil
+			return nil, nil, toolErr("getting spreadsheet metadata: %v", err)
 		}
 		var sheetInfos []sheetInfo
 		for _, sh := range meta.Sheets {
@@ -996,7 +1031,7 @@ func registerFormatSheetRange(s *mcpserver.MCPServer, getClient httpClientFunc) 
 
 		gridRange, err := parseA1Range(rangeName, sheetInfos)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		cellFormat := &sheets.CellFormat{}
@@ -1005,7 +1040,7 @@ func registerFormatSheetRange(s *mcpserver.MCPServer, getClient httpClientFunc) 
 		if bgColor != "" {
 			r, g, b, ok := parseHexColorSheets(bgColor)
 			if !ok {
-				return mcp.NewToolResultError(fmt.Sprintf("invalid background_color format: %s", bgColor)), nil
+				return nil, nil, toolErr("invalid background_color format: %s", bgColor)
 			}
 			cellFormat.BackgroundColor = &sheets.Color{
 				Red: r, Green: g, Blue: b,
@@ -1017,7 +1052,7 @@ func registerFormatSheetRange(s *mcpserver.MCPServer, getClient httpClientFunc) 
 		if txtColor != "" {
 			r, g, b, ok := parseHexColorSheets(txtColor)
 			if !ok {
-				return mcp.NewToolResultError(fmt.Sprintf("invalid text_color format: %s", txtColor)), nil
+				return nil, nil, toolErr("invalid text_color format: %s", txtColor)
 			}
 			cellFormat.TextFormat = &sheets.TextFormat{
 				ForegroundColor: &sheets.Color{
@@ -1031,7 +1066,7 @@ func registerFormatSheetRange(s *mcpserver.MCPServer, getClient httpClientFunc) 
 		if numFmtType != "" {
 			normalized := strings.ToUpper(numFmtType)
 			if !allowedNumberFormats[normalized] {
-				return mcp.NewToolResultError(fmt.Sprintf("number_format_type must be one of: %v", sortedKeys(allowedNumberFormats))), nil
+				return nil, nil, toolErr("number_format_type must be one of: %v", sortedKeys(allowedNumberFormats))
 			}
 			nf := &sheets.NumberFormat{Type: normalized}
 			if numFmtPattern != "" {
@@ -1053,7 +1088,7 @@ func registerFormatSheetRange(s *mcpserver.MCPServer, getClient httpClientFunc) 
 			},
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("applying formatting: %v", err)), nil
+			return nil, nil, toolErr("applying formatting: %v", err)
 		}
 
 		var appliedParts []string
@@ -1071,10 +1106,10 @@ func registerFormatSheetRange(s *mcpserver.MCPServer, getClient httpClientFunc) 
 			appliedParts = append(appliedParts, "format "+nfDesc)
 		}
 
-		return mcp.NewToolResultText(
+		return textResult(
 			fmt.Sprintf("Applied formatting to range '%s' in spreadsheet %s for %s: %s.",
-				rangeName, spreadsheetID, email, strings.Join(appliedParts, ", "))), nil
-	})
+				rangeName, spreadsheetID, email, strings.Join(appliedParts, ", ")))
+	}
 }
 
 // sortedKeys returns sorted keys from a map for display.
@@ -1096,58 +1131,60 @@ func sortedKeys(m map[string]bool) []string {
 
 // --- add_conditional_formatting ---
 
-func registerAddConditionalFormatting(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("add_conditional_formatting",
-		mcp.WithDescription("Adds a conditional formatting rule to a range.\n\nArgs:\n    user_google_email (str): The user's Google email address. Required.\n    spreadsheet_id (str): The ID of the spreadsheet. Required.\n    range_name (str): A1-style range. Required.\n    condition_type (str): Sheets condition type (e.g., NUMBER_GREATER, TEXT_CONTAINS, CUSTOM_FORMULA).\n    condition_values (Optional[str|array]): Values for the condition.\n    background_color (Optional[str]): Hex background color.\n    text_color (Optional[str]): Hex text color.\n    rule_index (Optional[int]): Position to insert the rule (0-based).\n    gradient_points (Optional[str|array]): Gradient points for color scale.\n\nReturns:\n    str: Confirmation of the added rule."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address")),
-		mcp.WithString("spreadsheet_id", mcp.Required(), mcp.Description("The ID of the spreadsheet")),
-		mcp.WithString("range_name", mcp.Required(), mcp.Description("A1-style range")),
-		mcp.WithString("condition_type", mcp.Required(), mcp.Description("Sheets condition type")),
-		mcp.WithString("condition_values", mcp.Description("Values for the condition (JSON array or string)")),
-		mcp.WithString("background_color", mcp.Description("Hex background color")),
-		mcp.WithString("text_color", mcp.Description("Hex text color")),
-		mcp.WithNumber("rule_index", mcp.Description("Position to insert the rule (0-based)")),
-		mcp.WithString("gradient_points", mcp.Description("Gradient points as JSON array")),
-	)
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		spreadsheetID, err := request.RequireString("spreadsheet_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		rangeName, err := request.RequireString("range_name")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		condType, err := request.RequireString("condition_type")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+func registerAddConditionalFormatting(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "add_conditional_formatting",
+		Description: "Adds a conditional formatting rule to a range.",
+	}
+	mcp.AddTool(s, tool, handleAddConditionalFormatting(getClient))
+}
 
-		args := request.GetArguments()
-		condValuesRaw := args["condition_values"]
-		bgColor := request.GetString("background_color", "")
-		txtColor := request.GetString("text_color", "")
-		ruleIndex := request.GetInt("rule_index", -1)
-		gradientPointsRaw := args["gradient_points"]
+// addConditionalFormattingIn is the input schema for add_conditional_formatting.
+type addConditionalFormattingIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address"`
+	SpreadsheetID   string `json:"spreadsheet_id" jsonschema:"The ID of the spreadsheet"`
+	RangeName       string `json:"range_name" jsonschema:"A1-style range"`
+	ConditionType   string `json:"condition_type" jsonschema:"Sheets condition type"`
+	ConditionValues any    `json:"condition_values,omitempty" jsonschema:"Values for the condition (JSON array or string)"`
+	BackgroundColor string `json:"background_color,omitempty" jsonschema:"Hex background color"`
+	TextColor       string `json:"text_color,omitempty" jsonschema:"Hex text color"`
+	RuleIndex       *int   `json:"rule_index,omitempty" jsonschema:"Position to insert the rule (0-based)"`
+	GradientPoints  any    `json:"gradient_points,omitempty" jsonschema:"Gradient points as JSON array"`
+}
+
+func handleAddConditionalFormatting(getClient httpClientFunc) mcp.ToolHandlerFor[addConditionalFormattingIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in addConditionalFormattingIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		spreadsheetID := in.SpreadsheetID
+		rangeName := in.RangeName
+		condType := in.ConditionType
+
+		condValuesRaw := in.ConditionValues
+		bgColor := in.BackgroundColor
+		txtColor := in.TextColor
+		ruleIndex := -1
+		if in.RuleIndex != nil {
+			ruleIndex = *in.RuleIndex
+		}
+		gradientPointsRaw := in.GradientPoints
 
 		svc, err := newSheetsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authentication failed: %v", err)), nil
+			return nil, nil, toolErr("authentication failed: %v", err)
 		}
 
 		// Fetch sheets with rules
 		infos, titles, err := fetchSheetsMetadata(svc, spreadsheetID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		gridRange, err := parseA1Range(rangeName, infos)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Find target sheet
@@ -1159,7 +1196,7 @@ func registerAddConditionalFormatting(s *mcpserver.MCPServer, getClient httpClie
 			}
 		}
 		if targetInfo == nil {
-			return mcp.NewToolResultError("target sheet not found"), nil
+			return nil, nil, toolErr("target sheet not found")
 		}
 
 		currentRules := targetInfo.ConditionalRules
@@ -1167,16 +1204,16 @@ func registerAddConditionalFormatting(s *mcpserver.MCPServer, getClient httpClie
 		if ruleIndex >= 0 {
 			insertAt = ruleIndex
 			if insertAt > len(currentRules) {
-				return mcp.NewToolResultError(
-					fmt.Sprintf("rule_index %d is out of range for sheet '%s' (current count: %d)",
-						insertAt, targetInfo.Title, len(currentRules))), nil
+				return nil, nil, toolErr(
+					"rule_index %d is out of range for sheet '%s' (current count: %d)",
+					insertAt, targetInfo.Title, len(currentRules))
 			}
 		}
 
 		// Parse gradient points
 		gPoints, err := parseGradientPoints(gradientPointsRaw)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		var newRule *sheets.ConditionalFormatRule
@@ -1206,18 +1243,17 @@ func registerAddConditionalFormatting(s *mcpserver.MCPServer, getClient httpClie
 		} else {
 			// Boolean rule
 			if bgColor == "" && txtColor == "" {
-				return mcp.NewToolResultError("provide at least one of background_color or text_color for the rule format"), nil
+				return nil, nil, toolErr("provide at least one of background_color or text_color for the rule format")
 			}
 
 			condTypeNorm := strings.ToUpper(condType)
 			if !conditionTypes[condTypeNorm] {
-				return mcp.NewToolResultError(
-					fmt.Sprintf("condition_type must be one of: %v", sortedKeys(conditionTypes))), nil
+				return nil, nil, toolErr("condition_type must be one of: %v", sortedKeys(conditionTypes))
 			}
 
 			condValues, err := parseConditionValues(condValuesRaw)
 			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
+				return nil, nil, err
 			}
 
 			condition := &sheets.BooleanCondition{Type: condTypeNorm}
@@ -1234,7 +1270,7 @@ func registerAddConditionalFormatting(s *mcpserver.MCPServer, getClient httpClie
 			if bgColor != "" {
 				r, g, b, ok := parseHexColorSheets(bgColor)
 				if !ok {
-					return mcp.NewToolResultError(fmt.Sprintf("invalid background_color: %s", bgColor)), nil
+					return nil, nil, toolErr("invalid background_color: %s", bgColor)
 				}
 				format.BackgroundColor = &sheets.Color{
 					Red: r, Green: g, Blue: b,
@@ -1245,7 +1281,7 @@ func registerAddConditionalFormatting(s *mcpserver.MCPServer, getClient httpClie
 			if txtColor != "" {
 				r, g, b, ok := parseHexColorSheets(txtColor)
 				if !ok {
-					return mcp.NewToolResultError(fmt.Sprintf("invalid text_color: %s", txtColor)), nil
+					return nil, nil, toolErr("invalid text_color: %s", txtColor)
 				}
 				format.TextFormat = &sheets.TextFormat{
 					ForegroundColor: &sheets.Color{
@@ -1260,7 +1296,7 @@ func registerAddConditionalFormatting(s *mcpserver.MCPServer, getClient httpClie
 				Ranges: []*sheets.GridRange{sheetsRange},
 				BooleanRule: &sheets.BooleanRule{
 					Condition: condition,
-					Format:   format,
+					Format:    format,
 				},
 			}
 			ruleDesc = condTypeNorm
@@ -1278,7 +1314,7 @@ func registerAddConditionalFormatting(s *mcpserver.MCPServer, getClient httpClie
 			},
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("adding conditional format: %v", err)), nil
+			return nil, nil, toolErr("adding conditional format: %v", err)
 		}
 
 		formatDesc := "format applied"
@@ -1296,59 +1332,64 @@ func registerAddConditionalFormatting(s *mcpserver.MCPServer, getClient httpClie
 
 		stateText := formatConditionalRulesSection(targetInfo.Title, newRulesState, titles, "")
 
-		return mcp.NewToolResultText(
+		return textResult(
 			fmt.Sprintf("Added conditional format on '%s' in spreadsheet %s for %s: %s%s; format: %s.\n%s",
-				rangeName, spreadsheetID, email, ruleDesc, valuesDesc, formatDesc, stateText)), nil
-	})
+				rangeName, spreadsheetID, email, ruleDesc, valuesDesc, formatDesc, stateText))
+	}
 }
 
 // --- update_conditional_formatting ---
 
-func registerUpdateConditionalFormatting(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("update_conditional_formatting",
-		mcp.WithDescription("Updates an existing conditional formatting rule by index on a sheet.\n\nArgs:\n    user_google_email (str): The user's Google email address. Required.\n    spreadsheet_id (str): The ID of the spreadsheet. Required.\n    rule_index (int): Index of the rule to update (0-based). Required.\n    range_name (Optional[str]): A1-style range. If omitted, existing ranges are preserved.\n    condition_type (Optional[str]): Sheets condition type.\n    condition_values (Optional[str|array]): Values for the condition.\n    background_color (Optional[str]): Hex background color.\n    text_color (Optional[str]): Hex text color.\n    sheet_name (Optional[str]): Sheet name to locate rule when range_name is omitted.\n    gradient_points (Optional[str|array]): Gradient points for color scale.\n\nReturns:\n    str: Confirmation of the updated rule."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address")),
-		mcp.WithString("spreadsheet_id", mcp.Required(), mcp.Description("The ID of the spreadsheet")),
-		mcp.WithNumber("rule_index", mcp.Required(), mcp.Description("Index of the rule to update (0-based)")),
-		mcp.WithString("range_name", mcp.Description("A1-style range")),
-		mcp.WithString("condition_type", mcp.Description("Sheets condition type")),
-		mcp.WithString("condition_values", mcp.Description("Values for the condition")),
-		mcp.WithString("background_color", mcp.Description("Hex background color")),
-		mcp.WithString("text_color", mcp.Description("Hex text color")),
-		mcp.WithString("sheet_name", mcp.Description("Sheet name when range_name is omitted")),
-		mcp.WithString("gradient_points", mcp.Description("Gradient points as JSON array")),
-	)
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerUpdateConditionalFormatting(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "update_conditional_formatting",
+		Description: "Updates an existing conditional formatting rule by index on a sheet.",
+	}
+	mcp.AddTool(s, tool, handleUpdateConditionalFormatting(getClient))
+}
+
+// updateConditionalFormattingIn is the input schema for update_conditional_formatting.
+type updateConditionalFormattingIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address"`
+	SpreadsheetID   string `json:"spreadsheet_id" jsonschema:"The ID of the spreadsheet"`
+	RuleIndex       int    `json:"rule_index" jsonschema:"Index of the rule to update (0-based)"`
+	RangeName       string `json:"range_name,omitempty" jsonschema:"A1-style range"`
+	ConditionType   string `json:"condition_type,omitempty" jsonschema:"Sheets condition type"`
+	ConditionValues any    `json:"condition_values,omitempty" jsonschema:"Values for the condition"`
+	BackgroundColor string `json:"background_color,omitempty" jsonschema:"Hex background color"`
+	TextColor       string `json:"text_color,omitempty" jsonschema:"Hex text color"`
+	SheetName       string `json:"sheet_name,omitempty" jsonschema:"Sheet name when range_name is omitted"`
+	GradientPoints  any    `json:"gradient_points,omitempty" jsonschema:"Gradient points as JSON array"`
+}
+
+func handleUpdateConditionalFormatting(getClient httpClientFunc) mcp.ToolHandlerFor[updateConditionalFormattingIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateConditionalFormattingIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		spreadsheetID, err := request.RequireString("spreadsheet_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		ruleIdx := request.GetInt("rule_index", -1)
+		spreadsheetID := in.SpreadsheetID
+		ruleIdx := in.RuleIndex
 		if ruleIdx < 0 {
-			return mcp.NewToolResultError("rule_index must be a non-negative integer"), nil
+			return nil, nil, toolErr("rule_index must be a non-negative integer")
 		}
 
-		args := request.GetArguments()
-		rangeName := request.GetString("range_name", "")
-		condType := request.GetString("condition_type", "")
-		condValuesRaw := args["condition_values"]
-		bgColor := request.GetString("background_color", "")
-		txtColor := request.GetString("text_color", "")
-		sheetName := request.GetString("sheet_name", "")
-		gradientPointsRaw := args["gradient_points"]
+		rangeName := in.RangeName
+		condType := in.ConditionType
+		condValuesRaw := in.ConditionValues
+		bgColor := in.BackgroundColor
+		txtColor := in.TextColor
+		sheetName := in.SheetName
+		gradientPointsRaw := in.GradientPoints
 
 		svc, err := newSheetsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authentication failed: %v", err)), nil
+			return nil, nil, toolErr("authentication failed: %v", err)
 		}
 
 		infos, titles, err := fetchSheetsMetadata(svc, spreadsheetID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		var targetInfo *sheetInfo
@@ -1356,7 +1397,7 @@ func registerUpdateConditionalFormatting(s *mcpserver.MCPServer, getClient httpC
 		if rangeName != "" {
 			gridRange, err = parseA1Range(rangeName, infos)
 			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
+				return nil, nil, err
 			}
 			for i := range infos {
 				if infos[i].SheetID == gridRange.SheetID {
@@ -1367,19 +1408,19 @@ func registerUpdateConditionalFormatting(s *mcpserver.MCPServer, getClient httpC
 		} else {
 			targetInfo, err = selectSheet(infos, sheetName)
 			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
+				return nil, nil, err
 			}
 		}
 
 		if targetInfo == nil {
-			return mcp.NewToolResultError("target sheet not found"), nil
+			return nil, nil, toolErr("target sheet not found")
 		}
 
 		rules := targetInfo.ConditionalRules
 		if ruleIdx >= len(rules) {
-			return mcp.NewToolResultError(
-				fmt.Sprintf("rule_index %d is out of range for sheet '%s' (current count: %d)",
-					ruleIdx, targetInfo.Title, len(rules))), nil
+			return nil, nil, toolErr(
+				"rule_index %d is out of range for sheet '%s' (current count: %d)",
+				ruleIdx, targetInfo.Title, len(rules))
 		}
 
 		existingRule := rules[ruleIdx]
@@ -1395,7 +1436,7 @@ func registerUpdateConditionalFormatting(s *mcpserver.MCPServer, getClient httpC
 
 		gPoints, err := parseGradientPoints(gradientPointsRaw)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		var newRule *sheets.ConditionalFormatRule
@@ -1421,7 +1462,7 @@ func registerUpdateConditionalFormatting(s *mcpserver.MCPServer, getClient httpC
 		} else if existingRule.GradientRule != nil {
 			// Existing gradient rule - keep it if no gradient_points provided
 			if bgColor != "" || txtColor != "" || condType != "" || condValuesRaw != nil {
-				return mcp.NewToolResultError("existing rule is a gradient rule. Provide gradient_points to update it, or omit formatting/condition parameters to keep it unchanged"), nil
+				return nil, nil, toolErr("existing rule is a gradient rule. Provide gradient_points to update it, or omit formatting/condition parameters to keep it unchanged")
 			}
 			newRule = &sheets.ConditionalFormatRule{
 				Ranges:       rangesToUse,
@@ -1450,16 +1491,15 @@ func registerUpdateConditionalFormatting(s *mcpserver.MCPServer, getClient httpC
 			}
 			ct = strings.ToUpper(ct)
 			if ct == "" {
-				return mcp.NewToolResultError("condition_type is required for boolean rules"), nil
+				return nil, nil, toolErr("condition_type is required for boolean rules")
 			}
 			if !conditionTypes[ct] {
-				return mcp.NewToolResultError(
-					fmt.Sprintf("condition_type must be one of: %v", sortedKeys(conditionTypes))), nil
+				return nil, nil, toolErr("condition_type must be one of: %v", sortedKeys(conditionTypes))
 			}
 
 			condValues, err := parseConditionValues(condValuesRaw)
 			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
+				return nil, nil, err
 			}
 
 			condition := &sheets.BooleanCondition{Type: ct}
@@ -1511,7 +1551,7 @@ func registerUpdateConditionalFormatting(s *mcpserver.MCPServer, getClient httpC
 			}
 
 			if newFormat.BackgroundColor == nil && newFormat.TextFormat == nil {
-				return mcp.NewToolResultError("at least one format option must remain on the rule"), nil
+				return nil, nil, toolErr("at least one format option must remain on the rule")
 			}
 
 			formatDesc = strings.Join(fmtParts, ", ")
@@ -1523,7 +1563,7 @@ func registerUpdateConditionalFormatting(s *mcpserver.MCPServer, getClient httpC
 				Ranges: rangesToUse,
 				BooleanRule: &sheets.BooleanRule{
 					Condition: condition,
-					Format:   newFormat,
+					Format:    newFormat,
 				},
 			}
 			ruleDesc = ct
@@ -1533,16 +1573,16 @@ func registerUpdateConditionalFormatting(s *mcpserver.MCPServer, getClient httpC
 			Requests: []*sheets.Request{
 				{
 					UpdateConditionalFormatRule: &sheets.UpdateConditionalFormatRuleRequest{
-						Index:   int64(ruleIdx),
-						SheetId: targetInfo.SheetID,
-						Rule:    newRule,
+						Index:           int64(ruleIdx),
+						SheetId:         targetInfo.SheetID,
+						Rule:            newRule,
 						ForceSendFields: []string{"Index"},
 					},
 				},
 			},
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("updating conditional format: %v", err)), nil
+			return nil, nil, toolErr("updating conditional format: %v", err)
 		}
 
 		// Build new state
@@ -1552,72 +1592,78 @@ func registerUpdateConditionalFormatting(s *mcpserver.MCPServer, getClient httpC
 
 		stateText := formatConditionalRulesSection(targetInfo.Title, newRulesState, titles, "")
 
-		return mcp.NewToolResultText(
+		return textResult(
 			fmt.Sprintf("Updated conditional format at index %d on sheet '%s' in spreadsheet %s for %s: %s%s; format: %s.\n%s",
-				ruleIdx, targetInfo.Title, spreadsheetID, email, ruleDesc, valuesDesc, formatDesc, stateText)), nil
-	})
+				ruleIdx, targetInfo.Title, spreadsheetID, email, ruleDesc, valuesDesc, formatDesc, stateText))
+	}
 }
 
 // --- delete_conditional_formatting ---
 
-func registerDeleteConditionalFormatting(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("delete_conditional_formatting",
-		mcp.WithDescription("Deletes an existing conditional formatting rule by index on a sheet.\n\nArgs:\n    user_google_email (str): The user's Google email address. Required.\n    spreadsheet_id (str): The ID of the spreadsheet. Required.\n    rule_index (int): Index of the rule to delete (0-based). Required.\n    sheet_name (Optional[str]): Name of the sheet. Defaults to the first sheet.\n\nReturns:\n    str: Confirmation of the deletion."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address")),
-		mcp.WithString("spreadsheet_id", mcp.Required(), mcp.Description("The ID of the spreadsheet")),
-		mcp.WithNumber("rule_index", mcp.Required(), mcp.Description("Index of the rule to delete (0-based)")),
-		mcp.WithString("sheet_name", mcp.Description("Name of the sheet")),
-	)
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerDeleteConditionalFormatting(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "delete_conditional_formatting",
+		Description: "Deletes an existing conditional formatting rule by index on a sheet.",
+	}
+	mcp.AddTool(s, tool, handleDeleteConditionalFormatting(getClient))
+}
+
+// deleteConditionalFormattingIn is the input schema for delete_conditional_formatting.
+type deleteConditionalFormattingIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address"`
+	SpreadsheetID   string `json:"spreadsheet_id" jsonschema:"The ID of the spreadsheet"`
+	RuleIndex       int    `json:"rule_index" jsonschema:"Index of the rule to delete (0-based)"`
+	SheetName       string `json:"sheet_name,omitempty" jsonschema:"Name of the sheet"`
+}
+
+func handleDeleteConditionalFormatting(getClient httpClientFunc) mcp.ToolHandlerFor[deleteConditionalFormattingIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteConditionalFormattingIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		spreadsheetID, err := request.RequireString("spreadsheet_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		ruleIdx := request.GetInt("rule_index", -1)
+		spreadsheetID := in.SpreadsheetID
+		ruleIdx := in.RuleIndex
 		if ruleIdx < 0 {
-			return mcp.NewToolResultError("rule_index must be a non-negative integer"), nil
+			return nil, nil, toolErr("rule_index must be a non-negative integer")
 		}
-		sheetName := request.GetString("sheet_name", "")
+		sheetName := in.SheetName
 
 		svc, err := newSheetsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authentication failed: %v", err)), nil
+			return nil, nil, toolErr("authentication failed: %v", err)
 		}
 
 		infos, titles, err := fetchSheetsMetadata(svc, spreadsheetID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		targetInfo, err := selectSheet(infos, sheetName)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		rules := targetInfo.ConditionalRules
 		if ruleIdx >= len(rules) {
-			return mcp.NewToolResultError(
-				fmt.Sprintf("rule_index %d is out of range for sheet '%s' (current count: %d)",
-					ruleIdx, targetInfo.Title, len(rules))), nil
+			return nil, nil, toolErr(
+				"rule_index %d is out of range for sheet '%s' (current count: %d)",
+				ruleIdx, targetInfo.Title, len(rules))
 		}
 
 		_, err = svc.Spreadsheets.BatchUpdate(spreadsheetID, &sheets.BatchUpdateSpreadsheetRequest{
 			Requests: []*sheets.Request{
 				{
 					DeleteConditionalFormatRule: &sheets.DeleteConditionalFormatRuleRequest{
-						Index:   int64(ruleIdx),
-						SheetId: targetInfo.SheetID,
+						Index:           int64(ruleIdx),
+						SheetId:         targetInfo.SheetID,
 						ForceSendFields: []string{"Index"},
 					},
 				},
 			},
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("deleting conditional format: %v", err)), nil
+			return nil, nil, toolErr("deleting conditional format: %v", err)
 		}
 
 		// Build new state (remove the deleted rule)
@@ -1630,34 +1676,40 @@ func registerDeleteConditionalFormatting(s *mcpserver.MCPServer, getClient httpC
 
 		stateText := formatConditionalRulesSection(targetInfo.Title, newRulesState, titles, "")
 
-		return mcp.NewToolResultText(
+		return textResult(
 			fmt.Sprintf("Deleted conditional format at index %d on sheet '%s' in spreadsheet %s for %s.\n%s",
-				ruleIdx, targetInfo.Title, spreadsheetID, email, stateText)), nil
-	})
+				ruleIdx, targetInfo.Title, spreadsheetID, email, stateText))
+	}
 }
 
 // --- create_spreadsheet ---
 
-func registerCreateSpreadsheet(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_spreadsheet",
-		mcp.WithDescription("Creates a new Google Spreadsheet.\n\nArgs:\n    user_google_email (str): The user's Google email address. Required.\n    title (str): The title of the new spreadsheet. Required.\n    sheet_names (Optional[array]): List of sheet names to create.\n\nReturns:\n    str: Information about the new spreadsheet."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address")),
-		mcp.WithString("title", mcp.Required(), mcp.Description("Title of the new spreadsheet")),
-		mcp.WithArray("sheet_names", mcp.Description("List of sheet names to create"), mcp.Items(map[string]any{"type": "string"})),
-	)
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerCreateSpreadsheet(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "create_spreadsheet",
+		Description: "Creates a new Google Spreadsheet.",
+	}
+	mcp.AddTool(s, tool, handleCreateSpreadsheet(getClient))
+}
+
+// createSpreadsheetIn is the input schema for create_spreadsheet.
+type createSpreadsheetIn struct {
+	UserGoogleEmail string   `json:"user_google_email,omitempty" jsonschema:"The user's Google email address"`
+	Title           string   `json:"title" jsonschema:"Title of the new spreadsheet"`
+	SheetNames      []string `json:"sheet_names,omitempty" jsonschema:"List of sheet names to create"`
+}
+
+func handleCreateSpreadsheet(getClient httpClientFunc) mcp.ToolHandlerFor[createSpreadsheetIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createSpreadsheetIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		title, err := request.RequireString("title")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		title := in.Title
 
 		svc, err := newSheetsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authentication failed: %v", err)), nil
+			return nil, nil, toolErr("authentication failed: %v", err)
 		}
 
 		body := &sheets.Spreadsheet{
@@ -1665,17 +1717,11 @@ func registerCreateSpreadsheet(s *mcpserver.MCPServer, getClient httpClientFunc)
 		}
 
 		// Parse sheet_names
-		args := request.GetArguments()
-		if sheetNamesRaw, ok := args["sheet_names"]; ok && sheetNamesRaw != nil {
-			if names, ok := sheetNamesRaw.([]any); ok && len(names) > 0 {
-				for _, n := range names {
-					name, _ := n.(string)
-					if name != "" {
-						body.Sheets = append(body.Sheets, &sheets.Sheet{
-							Properties: &sheets.SheetProperties{Title: name},
-						})
-					}
-				}
+		for _, name := range in.SheetNames {
+			if name != "" {
+				body.Sheets = append(body.Sheets, &sheets.Sheet{
+					Properties: &sheets.SheetProperties{Title: name},
+				})
 			}
 		}
 
@@ -1683,7 +1729,7 @@ func registerCreateSpreadsheet(s *mcpserver.MCPServer, getClient httpClientFunc)
 			Fields("spreadsheetId,spreadsheetUrl,properties(title,locale)").
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating spreadsheet: %v", err)), nil
+			return nil, nil, toolErr("creating spreadsheet: %v", err)
 		}
 
 		locale := spreadsheet.Properties.Locale
@@ -1691,38 +1737,41 @@ func registerCreateSpreadsheet(s *mcpserver.MCPServer, getClient httpClientFunc)
 			locale = "Unknown"
 		}
 
-		return mcp.NewToolResultText(
+		return textResult(
 			fmt.Sprintf("Successfully created spreadsheet '%s' for %s. ID: %s | URL: %s | Locale: %s",
-				title, email, spreadsheet.SpreadsheetId, spreadsheet.SpreadsheetUrl, locale)), nil
-	})
+				title, email, spreadsheet.SpreadsheetId, spreadsheet.SpreadsheetUrl, locale))
+	}
 }
 
 // --- create_sheet ---
 
-func registerCreateSheet(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_sheet",
-		mcp.WithDescription("Creates a new sheet within an existing spreadsheet.\n\nArgs:\n    user_google_email (str): The user's Google email address. Required.\n    spreadsheet_id (str): The ID of the spreadsheet. Required.\n    sheet_name (str): The name of the new sheet. Required.\n\nReturns:\n    str: Confirmation of the sheet creation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address")),
-		mcp.WithString("spreadsheet_id", mcp.Required(), mcp.Description("The ID of the spreadsheet")),
-		mcp.WithString("sheet_name", mcp.Required(), mcp.Description("Name of the new sheet")),
-	)
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerCreateSheet(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "create_sheet",
+		Description: "Creates a new sheet within an existing spreadsheet.",
+	}
+	mcp.AddTool(s, tool, handleCreateSheet(getClient))
+}
+
+// createSheetIn is the input schema for create_sheet.
+type createSheetIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address"`
+	SpreadsheetID   string `json:"spreadsheet_id" jsonschema:"The ID of the spreadsheet"`
+	SheetName       string `json:"sheet_name" jsonschema:"Name of the new sheet"`
+}
+
+func handleCreateSheet(getClient httpClientFunc) mcp.ToolHandlerFor[createSheetIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createSheetIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		spreadsheetID, err := request.RequireString("spreadsheet_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		sheetName, err := request.RequireString("sheet_name")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		spreadsheetID := in.SpreadsheetID
+		sheetName := in.SheetName
 
 		svc, err := newSheetsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authentication failed: %v", err)), nil
+			return nil, nil, toolErr("authentication failed: %v", err)
 		}
 
 		resp, err := svc.Spreadsheets.BatchUpdate(spreadsheetID, &sheets.BatchUpdateSpreadsheetRequest{
@@ -1735,7 +1784,7 @@ func registerCreateSheet(s *mcpserver.MCPServer, getClient httpClientFunc) {
 			},
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating sheet: %v", err)), nil
+			return nil, nil, toolErr("creating sheet: %v", err)
 		}
 
 		sheetID := int64(0)
@@ -1743,8 +1792,8 @@ func registerCreateSheet(s *mcpserver.MCPServer, getClient httpClientFunc) {
 			sheetID = resp.Replies[0].AddSheet.Properties.SheetId
 		}
 
-		return mcp.NewToolResultText(
+		return textResult(
 			fmt.Sprintf("Successfully created sheet '%s' (ID: %d) in spreadsheet %s for %s.",
-				sheetName, sheetID, spreadsheetID, email)), nil
-	})
+				sheetName, sheetID, spreadsheetID, email))
+	}
 }

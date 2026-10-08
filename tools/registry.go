@@ -2,51 +2,14 @@
 package tools
 
 import (
-	"context"
-	"fmt"
-	"os"
-	"strings"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
-
-	"github.com/magks/google-workspace-mcp-go/auth"
 	"github.com/magks/google-workspace-mcp-go/server"
 )
 
-// RegisterTool is a helper that wraps mcp.NewTool + server.AddTool.
-func RegisterTool(s *mcpserver.MCPServer, tool mcp.Tool, handler mcpserver.ToolHandlerFunc) {
-	s.AddTool(tool, handler)
-}
-
-// resolveEmail extracts the user's Google email from the request parameters,
-// falling back to the USER_GOOGLE_EMAIL environment variable, and finally
-// to the single available credential in the credential store.
-func resolveEmail(request mcp.CallToolRequest) (string, error) {
-	// 1. Try the explicit request parameter.
-	email, _ := request.RequireString("user_google_email")
-	if strings.TrimSpace(email) != "" {
-		return email, nil
-	}
-
-	// 2. Fall back to USER_GOOGLE_EMAIL env var.
-	if envEmail := os.Getenv("USER_GOOGLE_EMAIL"); strings.TrimSpace(envEmail) != "" {
-		return envEmail, nil
-	}
-
-	// 3. Fall back to the single credential in the store (single-user mode).
-	store := auth.NewCredentialStore()
-	users, err := store.ListUsers()
-	if err == nil && len(users) == 1 {
-		return users[0], nil
-	}
-
-	return "", fmt.Errorf("user_google_email is required: provide it as a parameter, set USER_GOOGLE_EMAIL env var, or use --single-user with one credential file")
-}
-
 // RegisterAllTools registers tools for all enabled services based on config.
 // If cfg.Tools is empty, all services are registered.
-func RegisterAllTools(s *mcpserver.MCPServer, cfg server.Config) {
+func RegisterAllTools(s *mcp.Server, cfg server.Config) {
 	enabled := make(map[string]bool, len(cfg.Tools))
 	for _, t := range cfg.Tools {
 		enabled[t] = true
@@ -55,7 +18,7 @@ func RegisterAllTools(s *mcpserver.MCPServer, cfg server.Config) {
 
 	type registrar struct {
 		name string
-		fn   func(*mcpserver.MCPServer, server.Config)
+		fn   func(*mcp.Server, server.Config)
 	}
 
 	registrars := []registrar{
@@ -85,9 +48,4 @@ func RegisterAllTools(s *mcpserver.MCPServer, cfg server.Config) {
 	if allTools || enabled["gmail"] {
 		RegisterAuthTools(s)
 	}
-}
-
-// notImplemented returns a placeholder handler for tools not yet implemented.
-func notImplemented(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return mcp.NewToolResultText("not yet implemented"), nil
 }

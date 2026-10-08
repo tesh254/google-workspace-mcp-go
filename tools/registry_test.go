@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // --- resolveEmail ---
@@ -15,12 +13,7 @@ func TestResolveEmailParamTakesPriority(t *testing.T) {
 	// Set env var to prove it's ignored when param is present.
 	t.Setenv("USER_GOOGLE_EMAIL", "env@example.com")
 
-	request := mcp.CallToolRequest{}
-	request.Params.Arguments = map[string]any{
-		"user_google_email": "param@example.com",
-	}
-
-	got, err := resolveEmail(request)
+	got, err := resolveEmail("param@example.com")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -34,10 +27,7 @@ func TestResolveEmailFallsBackToEnvVar(t *testing.T) {
 	// Point credential dir to empty temp dir so fallback 3 doesn't trigger.
 	t.Setenv("WORKSPACE_MCP_CREDENTIALS_DIR", t.TempDir())
 
-	request := mcp.CallToolRequest{}
-	request.Params.Arguments = map[string]any{}
-
-	got, err := resolveEmail(request)
+	got, err := resolveEmail("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,10 +46,7 @@ func TestResolveEmailFallsBackToSingleCredFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := mcp.CallToolRequest{}
-	request.Params.Arguments = map[string]any{}
-
-	got, err := resolveEmail(request)
+	got, err := resolveEmail("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,10 +60,7 @@ func TestResolveEmailErrorWhenNoSource(t *testing.T) {
 	// Point to empty dir — no credential files.
 	t.Setenv("WORKSPACE_MCP_CREDENTIALS_DIR", t.TempDir())
 
-	request := mcp.CallToolRequest{}
-	request.Params.Arguments = map[string]any{}
-
-	_, err := resolveEmail(request)
+	_, err := resolveEmail("")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -88,12 +72,7 @@ func TestResolveEmailErrorWhenNoSource(t *testing.T) {
 func TestResolveEmailWhitespaceOnlyParamTreatedAsEmpty(t *testing.T) {
 	t.Setenv("USER_GOOGLE_EMAIL", "env@example.com")
 
-	request := mcp.CallToolRequest{}
-	request.Params.Arguments = map[string]any{
-		"user_google_email": "   \t  ",
-	}
-
-	got, err := resolveEmail(request)
+	got, err := resolveEmail("   \t  ")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,10 +92,7 @@ func TestResolveEmailWhitespaceOnlyEnvVarTreatedAsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := mcp.CallToolRequest{}
-	request.Params.Arguments = map[string]any{}
-
-	got, err := resolveEmail(request)
+	got, err := resolveEmail("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

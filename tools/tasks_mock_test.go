@@ -20,8 +20,8 @@ func TestTasksMockListTaskLists(t *testing.T) {
 			},
 		})
 		handler := handleListTaskLists(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_task_lists", listTaskListsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Task Lists") {
 			t.Errorf("expected 'Task Lists' in output, got:\n%s", text)
@@ -44,8 +44,8 @@ func TestTasksMockListTaskLists(t *testing.T) {
 			},
 		})
 		handler := handleListTaskLists(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_task_lists", listTaskListsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No task lists found") {
 			t.Errorf("expected 'No task lists found', got:\n%s", text)
@@ -66,9 +66,9 @@ func TestTasksMockCreateTaskList(t *testing.T) {
 			},
 		})
 		handler := handleCreateTaskList(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"title":             "Shopping",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_task_list", createTaskListIn{
+			Title:           "Shopping",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Task List Created") {
 			t.Errorf("expected 'Task List Created', got:\n%s", text)
@@ -98,9 +98,9 @@ func TestTasksMockListTasks(t *testing.T) {
 			},
 		})
 		handler := handleListTasks(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"task_list_id":      "tl001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_tasks", listTasksIn{
+			TaskListID:      "tl001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Buy groceries") {
 			t.Errorf("expected task title in output, got:\n%s", text)
@@ -124,10 +124,10 @@ func TestTasksMockCreateTask(t *testing.T) {
 			},
 		})
 		handler := handleCreateTask(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"task_list_id":      "tl001",
-			"title":             "Write tests",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_task", createTaskIn{
+			TaskListID:      "tl001",
+			Title:           "Write tests",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Task Created") {
 			t.Errorf("expected 'Task Created', got:\n%s", text)
@@ -149,8 +149,8 @@ func TestTasksMockAPIError(t *testing.T) {
 			"/tasks/v1/users/@me/lists": {code: 403, body: `{"error": {"code": 403, "message": "Forbidden"}}`},
 		})
 		handler := handleListTaskLists(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "list_task_lists", listTaskListsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "listing task lists") {
 			t.Errorf("expected listing error, got:\n%s", text)
@@ -162,10 +162,10 @@ func TestTasksMockAPIError(t *testing.T) {
 			"/tasks/v1/lists/tl001/tasks": {code: 500, body: `{"error": {"code": 500, "message": "Internal Server Error"}}`},
 		})
 		handler := handleCreateTask(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"task_list_id":      "tl001",
-			"title":             "Bad Task",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "create_task", createTaskIn{
+			TaskListID:      "tl001",
+			Title:           "Bad Task",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "creating task") {
 			t.Errorf("expected creating task error, got:\n%s", text)

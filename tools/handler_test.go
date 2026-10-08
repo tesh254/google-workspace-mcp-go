@@ -2,21 +2,18 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/magks/google-workspace-mcp-go/server"
 )
 
-// newToolTestServer creates an MCP server with all tools registered, a temp
-// credential dir (empty, so no single-user fallback), and a fake email env var
-// so that resolveEmail succeeds.
-func newToolTestServer(t *testing.T) *mcpserver.MCPServer {
+// newToolTestSession connects an in-memory client to an MCP server with all
+// tools registered, a temp credential dir (empty, so no single-user fallback),
+// and a fake email env var so that resolveEmail succeeds.
+func newToolTestSession(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 	t.Setenv("WORKSPACE_MCP_CREDENTIALS_DIR", t.TempDir())
 	t.Setenv("USER_GOOGLE_EMAIL", "test@example.com")
@@ -24,85 +21,66 @@ func newToolTestServer(t *testing.T) *mcpserver.MCPServer {
 	s := server.New(cfg)
 	RegisterAllTools(s, cfg)
 	FilterTools(s, cfg)
-	return s
-}
 
-// callToolRaw sends a tools/call JSON-RPC message and returns the raw
-// response, which is either a JSONRPCResponse or JSONRPCError.
-func callToolRaw(t *testing.T, s *mcpserver.MCPServer, toolName string, args map[string]any) mcp.JSONRPCMessage {
-	t.Helper()
-	params := map[string]any{
-		"name":      toolName,
-		"arguments": args,
+	ctx := context.Background()
+	sTransport, cTransport := mcp.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, sTransport, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
 	}
-	msg := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params":  params,
-	}
-	raw, err := json.Marshal(msg)
+	client := mcp.NewClient(&mcp.Implementation{Name: "tools-test", Version: "v0.0.1"}, nil)
+	cs, err := client.Connect(ctx, cTransport, nil)
 	if err != nil {
-		t.Fatalf("marshal tools/call: %v", err)
+		t.Fatalf("client connect: %v", err)
 	}
-	return s.HandleMessage(context.Background(), raw)
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
 }
 
-// callTool sends a tools/call JSON-RPC message and returns the text content
-// and isError flag. It fails the test if the response is a protocol-level
-// error (JSONRPCError) rather than a tool-level result.
-func callTool(t *testing.T, s *mcpserver.MCPServer, toolName string, args map[string]any) (text string, isError bool) {
+// callTool sends a tools/call request through the client session and returns
+// the text content and isError flag. It fails the test if the call returns a
+// protocol-level error rather than a tool-level result.
+func callTool(t *testing.T, cs *mcp.ClientSession, toolName string, args map[string]any) (text string, isError bool) {
 	t.Helper()
-	resp := callToolRaw(t, s, toolName, args)
-	switch r := resp.(type) {
-	case mcp.JSONRPCResponse:
-		result, ok := r.Result.(mcp.CallToolResult)
-		if !ok {
-			t.Fatalf("expected CallToolResult, got %T", r.Result)
-		}
-		if len(result.Content) == 0 {
-			return "", result.IsError
-		}
-		tc, ok := result.Content[0].(mcp.TextContent)
-		if !ok {
-			t.Fatalf("expected TextContent, got %T", result.Content[0])
-		}
-		return tc.Text, result.IsError
-	case mcp.JSONRPCError:
-		t.Fatalf("protocol error %d: %s", r.Error.Code, r.Error.Message)
-		return "", true
-	default:
-		t.Fatalf("unexpected response type %T", resp)
-		return "", true
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      toolName,
+		Arguments: args,
+	})
+	if err != nil {
+		t.Fatalf("protocol error calling %s: %v", toolName, err)
 	}
+	if len(res.Content) == 0 {
+		return "", res.IsError
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", res.Content[0])
+	}
+	return tc.Text, res.IsError
 }
 
 // --- Smoke tests ---
 
 func TestHandlerNonexistentTool(t *testing.T) {
-	s := newToolTestServer(t)
-	resp := callToolRaw(t, s, "this_tool_does_not_exist", nil)
-	rpcErr, ok := resp.(mcp.JSONRPCError)
-	if !ok {
-		t.Fatalf("expected JSONRPCError for nonexistent tool, got %T", resp)
+	cs := newToolTestSession(t)
+	_, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "this_tool_does_not_exist",
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent tool, got nil")
 	}
-	if rpcErr.Error.Code != mcp.INVALID_PARAMS {
-		t.Errorf("expected INVALID_PARAMS code, got %d", rpcErr.Error.Code)
-	}
-	if !strings.Contains(rpcErr.Error.Message, "not found") {
-		t.Errorf("expected 'not found' in error, got %q", rpcErr.Error.Message)
+	if !strings.Contains(strings.ToLower(err.Error()), "unknown tool") {
+		t.Errorf("expected 'unknown tool' in error, got %q", err.Error())
 	}
 }
 
 func TestHandlerMissingRequiredParam(t *testing.T) {
-	s := newToolTestServer(t)
-	// search_gmail_messages requires "query" param
-	text, isError := callTool(t, s, "search_gmail_messages", nil)
+	cs := newToolTestSession(t)
+	// search_gmail_messages requires "query" param.
+	text, isError := callTool(t, cs, "search_gmail_messages", nil)
 	if !isError {
 		t.Fatal("expected isError=true for missing query param")
 	}
 	if !strings.Contains(strings.ToLower(text), "query") {
 		t.Errorf("expected error to mention 'query', got %q", text)
 	}
-	fmt.Println("OK: missing required param returns descriptive error:", text)
 }

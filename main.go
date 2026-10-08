@@ -1,13 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/magks/google-workspace-mcp-go/server"
 	"github.com/magks/google-workspace-mcp-go/tools"
@@ -53,8 +53,9 @@ func run() error {
 		fmt.Fprintln(os.Stderr, "streamable-http transport is not yet implemented")
 		return nil
 	default:
-		errLogger := log.New(os.Stderr, "", log.LstdFlags)
-		return mcpserver.ServeStdio(s, mcpserver.WithErrorLogger(errLogger))
+		// Run blocks until the client disconnects or the process is
+		// interrupted; on a clean disconnect it returns nil.
+		return s.Run(context.Background(), &mcp.StdioTransport{})
 	}
 }
 

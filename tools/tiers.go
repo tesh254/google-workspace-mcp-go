@@ -1,7 +1,7 @@
 package tools
 
 import (
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/magks/google-workspace-mcp-go/server"
 )
@@ -245,22 +245,22 @@ var tierTools = map[string]map[string][]string{
 // All other tools require write scopes and are removed when --read-only is active.
 var readOnlyTools = map[string]bool{
 	// Gmail
-	"search_gmail_messages":          true,
-	"get_gmail_message_content":      true,
+	"search_gmail_messages":            true,
+	"get_gmail_message_content":        true,
 	"get_gmail_messages_content_batch": true,
-	"get_gmail_attachment_content":   true,
-	"get_gmail_thread_content":       true,
-	"get_gmail_threads_content_batch": true,
-	"list_gmail_labels":              true,
-	"list_gmail_filters":             true,
+	"get_gmail_attachment_content":     true,
+	"get_gmail_thread_content":         true,
+	"get_gmail_threads_content_batch":  true,
+	"list_gmail_labels":                true,
+	"list_gmail_filters":               true,
 	// Drive
-	"search_drive_files":           true,
-	"get_drive_file_content":       true,
-	"get_drive_file_download_url":  true,
-	"list_drive_items":             true,
-	"get_drive_file_permissions":   true,
+	"search_drive_files":             true,
+	"get_drive_file_content":         true,
+	"get_drive_file_download_url":    true,
+	"list_drive_items":               true,
+	"get_drive_file_permissions":     true,
 	"check_drive_file_public_access": true,
-	"get_drive_shareable_link":     true,
+	"get_drive_shareable_link":       true,
 	// Calendar
 	"list_calendars": true,
 	"get_events":     true,
@@ -273,35 +273,35 @@ var readOnlyTools = map[string]bool{
 	"debug_table_structure": true,
 	"export_doc_to_pdf":     true,
 	// Sheets
-	"list_spreadsheets":   true,
+	"list_spreadsheets":    true,
 	"get_spreadsheet_info": true,
-	"read_sheet_values":   true,
+	"read_sheet_values":    true,
 	// Chat
 	"list_spaces":     true,
 	"get_messages":    true,
 	"search_messages": true,
 	// Forms
-	"get_form":             true,
-	"get_form_response":    true,
-	"list_form_responses":  true,
+	"get_form":            true,
+	"get_form_response":   true,
+	"list_form_responses": true,
 	// Slides
-	"get_presentation":    true,
-	"get_page":            true,
-	"get_page_thumbnail":  true,
+	"get_presentation":   true,
+	"get_page":           true,
+	"get_page_thumbnail": true,
 	// Tasks
-	"get_task":       true,
-	"list_tasks":     true,
+	"get_task":        true,
+	"list_tasks":      true,
 	"list_task_lists": true,
-	"get_task_list":  true,
+	"get_task_list":   true,
 	// Contacts
-	"search_contacts":      true,
-	"get_contact":          true,
-	"list_contacts":        true,
-	"list_contact_groups":  true,
-	"get_contact_group":    true,
+	"search_contacts":     true,
+	"get_contact":         true,
+	"list_contacts":       true,
+	"list_contact_groups": true,
+	"get_contact_group":   true,
 	// Search (all read-only)
-	"search_custom":             true,
-	"get_search_engine_info":    true,
+	"search_custom":              true,
+	"get_search_engine_info":     true,
 	"search_custom_siterestrict": true,
 	// Apps Script
 	"list_script_projects":  true,
@@ -341,7 +341,7 @@ func allowedToolsForTier(tier string) map[string]bool {
 
 // FilterTools removes tools from the server based on tier and read-only settings.
 // It is called after RegisterAllTools to apply post-registration filtering.
-func FilterTools(s *mcpserver.MCPServer, cfg server.Config) {
+func FilterTools(s *mcp.Server, cfg server.Config) {
 	tierAllowed := allowedToolsForTier(cfg.ToolTier)
 
 	var toRemove []string
@@ -375,6 +375,6 @@ func FilterTools(s *mcpserver.MCPServer, cfg server.Config) {
 	}
 
 	if len(toRemove) > 0 {
-		s.DeleteTools(toRemove...)
+		s.RemoveTools(toRemove...)
 	}
 }

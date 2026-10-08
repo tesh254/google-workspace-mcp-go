@@ -8,8 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	tasks "google.golang.org/api/tasks/v1"
 
 	"github.com/magks/google-workspace-mcp-go/internal/google"
@@ -22,7 +21,7 @@ const (
 )
 
 // RegisterTasksTools registers all Tasks tools with the MCP server.
-func RegisterTasksTools(s *mcpserver.MCPServer, _ server.Config) {
+func RegisterTasksTools(s *mcp.Server, _ server.Config) {
 	getClient := clientFuncFromCache(google.DefaultClientCache())
 
 	// Read tools
@@ -212,30 +211,38 @@ func adjustDueMaxForTasksAPI(dueMax string) string {
 
 // --- list_task_lists ---
 
-func registerListTaskLists(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_task_lists",
-		mcp.WithDescription("List all task lists for the user."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithNumber("max_results", mcp.Description("Maximum number of task lists to return (default: 1000, max: 1000).")),
-		mcp.WithString("page_token", mcp.Description("Token for pagination.")),
-	)
-	s.AddTool(tool, handleListTaskLists(getClient))
+func registerListTaskLists(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "list_task_lists",
+		Description: "List all task lists for the user.",
+	}
+	mcp.AddTool(s, tool, handleListTaskLists(getClient))
 }
 
-func handleListTaskLists(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// listTaskListsIn is the input schema for list_task_lists.
+type listTaskListsIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	MaxResults      int    `json:"max_results,omitempty" jsonschema:"Maximum number of task lists to return (default: 1000, max: 1000)."`
+	PageToken       string `json:"page_token,omitempty" jsonschema:"Token for pagination."`
+}
+
+func handleListTaskLists(getClient httpClientFunc) mcp.ToolHandlerFor[listTaskListsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listTaskListsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
-		maxResults := request.GetInt("max_results", 1000)
-		pageToken := request.GetString("page_token", "")
+		maxResults := in.MaxResults
+		if maxResults == 0 {
+			maxResults = 1000
+		}
+		pageToken := in.PageToken
 
 		call := svc.Tasklists.List().MaxResults(int64(maxResults))
 		if pageToken != "" {
@@ -244,11 +251,11 @@ func handleListTaskLists(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		result, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing task lists: %v", err)), nil
+			return nil, nil, toolErr("listing task lists: %v", err)
 		}
 
 		if len(result.Items) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No task lists found for %s.", email)), nil
+			return textResult(fmt.Sprintf("No task lists found for %s.", email))
 		}
 
 		var sb strings.Builder
@@ -262,40 +269,42 @@ func handleListTaskLists(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			fmt.Fprintf(&sb, "\nNext page token: %s", result.NextPageToken)
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
+		return textResult(sb.String())
 	}
 }
 
 // --- get_task_list ---
 
-func registerGetTaskList(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_task_list",
-		mcp.WithDescription("Get details of a specific task list."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("task_list_id", mcp.Required(), mcp.Description("The ID of the task list to retrieve.")),
-	)
-	s.AddTool(tool, handleGetTaskList(getClient))
+func registerGetTaskList(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_task_list",
+		Description: "Get details of a specific task list.",
+	}
+	mcp.AddTool(s, tool, handleGetTaskList(getClient))
 }
 
-func handleGetTaskList(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// getTaskListIn is the input schema for get_task_list.
+type getTaskListIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	TaskListID      string `json:"task_list_id" jsonschema:"The ID of the task list to retrieve."`
+}
+
+func handleGetTaskList(getClient httpClientFunc) mcp.ToolHandlerFor[getTaskListIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getTaskListIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		taskListID, err := request.RequireString("task_list_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		taskListID := in.TaskListID
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		tl, err := svc.Tasklists.Get(taskListID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting task list: %v", err)), nil
+			return nil, nil, toolErr("getting task list: %v", err)
 		}
 
 		response := fmt.Sprintf(`Task List Details for %s:
@@ -304,40 +313,42 @@ func handleGetTaskList(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 - Updated: %s
 - Self Link: %s`, email, tl.Title, tl.Id, orNA(tl.Updated), orNA(tl.SelfLink))
 
-		return mcp.NewToolResultText(response), nil
+		return textResult(response)
 	}
 }
 
 // --- create_task_list ---
 
-func registerCreateTaskList(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_task_list",
-		mcp.WithDescription("Create a new task list."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("title", mcp.Required(), mcp.Description("The title of the new task list.")),
-	)
-	s.AddTool(tool, handleCreateTaskList(getClient))
+func registerCreateTaskList(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "create_task_list",
+		Description: "Create a new task list.",
+	}
+	mcp.AddTool(s, tool, handleCreateTaskList(getClient))
 }
 
-func handleCreateTaskList(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// createTaskListIn is the input schema for create_task_list.
+type createTaskListIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	Title           string `json:"title" jsonschema:"The title of the new task list."`
+}
+
+func handleCreateTaskList(getClient httpClientFunc) mcp.ToolHandlerFor[createTaskListIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createTaskListIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		title, err := request.RequireString("title")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		title := in.Title
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		result, err := svc.Tasklists.Insert(&tasks.TaskList{Title: title}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating task list: %v", err)), nil
+			return nil, nil, toolErr("creating task list: %v", err)
 		}
 
 		response := fmt.Sprintf(`Task List Created for %s:
@@ -346,46 +357,45 @@ func handleCreateTaskList(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 - Created: %s
 - Self Link: %s`, email, result.Title, result.Id, orNA(result.Updated), orNA(result.SelfLink))
 
-		return mcp.NewToolResultText(response), nil
+		return textResult(response)
 	}
 }
 
 // --- update_task_list ---
 
-func registerUpdateTaskList(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("update_task_list",
-		mcp.WithDescription("Update an existing task list."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("task_list_id", mcp.Required(), mcp.Description("The ID of the task list to update.")),
-		mcp.WithString("title", mcp.Required(), mcp.Description("The new title for the task list.")),
-	)
-	s.AddTool(tool, handleUpdateTaskList(getClient))
+func registerUpdateTaskList(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "update_task_list",
+		Description: "Update an existing task list.",
+	}
+	mcp.AddTool(s, tool, handleUpdateTaskList(getClient))
 }
 
-func handleUpdateTaskList(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// updateTaskListIn is the input schema for update_task_list.
+type updateTaskListIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	TaskListID      string `json:"task_list_id" jsonschema:"The ID of the task list to update."`
+	Title           string `json:"title" jsonschema:"The new title for the task list."`
+}
+
+func handleUpdateTaskList(getClient httpClientFunc) mcp.ToolHandlerFor[updateTaskListIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateTaskListIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		taskListID, err := request.RequireString("task_list_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		title, err := request.RequireString("title")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		taskListID := in.TaskListID
+		title := in.Title
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		body := &tasks.TaskList{Id: taskListID, Title: title}
 		result, err := svc.Tasklists.Update(taskListID, body).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("updating task list: %v", err)), nil
+			return nil, nil, toolErr("updating task list: %v", err)
 		}
 
 		response := fmt.Sprintf(`Task List Updated for %s:
@@ -393,104 +403,110 @@ func handleUpdateTaskList(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 - ID: %s
 - Updated: %s`, email, result.Title, result.Id, orNA(result.Updated))
 
-		return mcp.NewToolResultText(response), nil
+		return textResult(response)
 	}
 }
 
 // --- delete_task_list ---
 
-func registerDeleteTaskList(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("delete_task_list",
-		mcp.WithDescription("Delete a task list. Note: This will also delete all tasks in the list."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("task_list_id", mcp.Required(), mcp.Description("The ID of the task list to delete.")),
-	)
-	s.AddTool(tool, handleDeleteTaskList(getClient))
+func registerDeleteTaskList(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "delete_task_list",
+		Description: "Delete a task list. Note: This will also delete all tasks in the list.",
+	}
+	mcp.AddTool(s, tool, handleDeleteTaskList(getClient))
 }
 
-func handleDeleteTaskList(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// deleteTaskListIn is the input schema for delete_task_list.
+type deleteTaskListIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	TaskListID      string `json:"task_list_id" jsonschema:"The ID of the task list to delete."`
+}
+
+func handleDeleteTaskList(getClient httpClientFunc) mcp.ToolHandlerFor[deleteTaskListIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteTaskListIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		taskListID, err := request.RequireString("task_list_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		taskListID := in.TaskListID
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		err = svc.Tasklists.Delete(taskListID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("deleting task list: %v", err)), nil
+			return nil, nil, toolErr("deleting task list: %v", err)
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf(
+		return textResult(fmt.Sprintf(
 			"Task list %s has been deleted for %s. All tasks in this list have also been deleted.",
 			taskListID, email,
-		)), nil
+		))
 	}
 }
 
 // --- list_tasks ---
 
-func registerListTasks(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_tasks",
-		mcp.WithDescription("List all tasks in a specific task list."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("task_list_id", mcp.Required(), mcp.Description("The ID of the task list to retrieve tasks from.")),
-		mcp.WithNumber("max_results", mcp.Description("Maximum number of tasks to return (default: 20, max: 10000).")),
-		mcp.WithString("page_token", mcp.Description("Token for pagination.")),
-		mcp.WithBoolean("show_completed", mcp.Description("Whether to include completed tasks (default: true). Note that show_hidden must also be true to show tasks completed in first party clients, such as the web UI and Google's mobile apps.")),
-		mcp.WithBoolean("show_deleted", mcp.Description("Whether to include deleted tasks (default: false).")),
-		mcp.WithBoolean("show_hidden", mcp.Description("Whether to include hidden tasks (default: false).")),
-		mcp.WithBoolean("show_assigned", mcp.Description("Whether to include assigned tasks (default: false).")),
-		mcp.WithString("completed_max", mcp.Description("Upper bound for completion date (RFC 3339 timestamp).")),
-		mcp.WithString("completed_min", mcp.Description("Lower bound for completion date (RFC 3339 timestamp).")),
-		mcp.WithString("due_max", mcp.Description("Upper bound for due date (RFC 3339 timestamp).")),
-		mcp.WithString("due_min", mcp.Description("Lower bound for due date (RFC 3339 timestamp).")),
-		mcp.WithString("updated_min", mcp.Description("Lower bound for last modification time (RFC 3339 timestamp).")),
-	)
-	s.AddTool(tool, handleListTasks(getClient))
+func registerListTasks(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "list_tasks",
+		Description: "List all tasks in a specific task list.",
+	}
+	mcp.AddTool(s, tool, handleListTasks(getClient))
 }
 
-func handleListTasks(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// listTasksIn is the input schema for list_tasks.
+type listTasksIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	TaskListID      string `json:"task_list_id" jsonschema:"The ID of the task list to retrieve tasks from."`
+	MaxResults      int    `json:"max_results,omitempty" jsonschema:"Maximum number of tasks to return (default: 20, max: 10000)."`
+	PageToken       string `json:"page_token,omitempty" jsonschema:"Token for pagination."`
+	ShowCompleted   *bool  `json:"show_completed,omitempty" jsonschema:"Whether to include completed tasks (default: true). Note that show_hidden must also be true to show tasks completed in first party clients, such as the web UI and Google's mobile apps."`
+	ShowDeleted     bool   `json:"show_deleted,omitempty" jsonschema:"Whether to include deleted tasks (default: false)."`
+	ShowHidden      bool   `json:"show_hidden,omitempty" jsonschema:"Whether to include hidden tasks (default: false)."`
+	ShowAssigned    bool   `json:"show_assigned,omitempty" jsonschema:"Whether to include assigned tasks (default: false)."`
+	CompletedMax    string `json:"completed_max,omitempty" jsonschema:"Upper bound for completion date (RFC 3339 timestamp)."`
+	CompletedMin    string `json:"completed_min,omitempty" jsonschema:"Lower bound for completion date (RFC 3339 timestamp)."`
+	DueMax          string `json:"due_max,omitempty" jsonschema:"Upper bound for due date (RFC 3339 timestamp)."`
+	DueMin          string `json:"due_min,omitempty" jsonschema:"Lower bound for due date (RFC 3339 timestamp)."`
+	UpdatedMin      string `json:"updated_min,omitempty" jsonschema:"Lower bound for last modification time (RFC 3339 timestamp)."`
+}
+
+func handleListTasks(getClient httpClientFunc) mcp.ToolHandlerFor[listTasksIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listTasksIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		taskListID, err := request.RequireString("task_list_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		taskListID := in.TaskListID
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
-		maxResults := request.GetInt("max_results", listTasksMaxResultsDefault)
-		pageToken := request.GetString("page_token", "")
+		maxResults := in.MaxResults
+		if maxResults == 0 {
+			maxResults = listTasksMaxResultsDefault
+		}
+		pageToken := in.PageToken
 
-		args := request.GetArguments()
-		showCompleted := getBool(request, "show_completed", true)
-		showDeleted := getBool(request, "show_deleted", false)
-		showHidden := getBool(request, "show_hidden", false)
-		showAssigned := getBool(request, "show_assigned", false)
+		showCompleted := true
+		if in.ShowCompleted != nil {
+			showCompleted = *in.ShowCompleted
+		}
+		showDeleted := in.ShowDeleted
+		showHidden := in.ShowHidden
+		showAssigned := in.ShowAssigned
 
-		completedMax := request.GetString("completed_max", "")
-		completedMin := request.GetString("completed_min", "")
-		dueMax := request.GetString("due_max", "")
-		dueMin := request.GetString("due_min", "")
-		updatedMin := request.GetString("updated_min", "")
-
-		// Suppress unused variable warning for args.
-		_ = args
+		completedMax := in.CompletedMax
+		completedMin := in.CompletedMin
+		dueMax := in.DueMax
+		dueMin := in.DueMin
+		updatedMin := in.UpdatedMin
 
 		call := svc.Tasks.List(taskListID).MaxResults(int64(maxResults))
 		call = call.ShowCompleted(showCompleted)
@@ -519,7 +535,7 @@ func handleListTasks(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		result, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing tasks: %v", err)), nil
+			return nil, nil, toolErr("listing tasks: %v", err)
 		}
 
 		allTasks := result.Items
@@ -559,7 +575,7 @@ func handleListTasks(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		}
 
 		if len(allTasks) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No tasks found in task list %s for %s.", taskListID, email)), nil
+			return textResult(fmt.Sprintf("No tasks found in task list %s for %s.", taskListID, email))
 		}
 
 		structured := getStructuredTasks(allTasks)
@@ -572,45 +588,44 @@ func handleListTasks(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			fmt.Fprintf(&sb, "Next page token: %s\n", nextPageToken)
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
+		return textResult(sb.String())
 	}
 }
 
 // --- get_task ---
 
-func registerGetTask(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_task",
-		mcp.WithDescription("Get details of a specific task."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("task_list_id", mcp.Required(), mcp.Description("The ID of the task list containing the task.")),
-		mcp.WithString("task_id", mcp.Required(), mcp.Description("The ID of the task to retrieve.")),
-	)
-	s.AddTool(tool, handleGetTask(getClient))
+func registerGetTask(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_task",
+		Description: "Get details of a specific task.",
+	}
+	mcp.AddTool(s, tool, handleGetTask(getClient))
 }
 
-func handleGetTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// getTaskIn is the input schema for get_task.
+type getTaskIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	TaskListID      string `json:"task_list_id" jsonschema:"The ID of the task list containing the task."`
+	TaskID          string `json:"task_id" jsonschema:"The ID of the task to retrieve."`
+}
+
+func handleGetTask(getClient httpClientFunc) mcp.ToolHandlerFor[getTaskIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getTaskIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		taskListID, err := request.RequireString("task_list_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		taskID, err := request.RequireString("task_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		taskListID := in.TaskListID
+		taskID := in.TaskID
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		task, err := svc.Tasks.Get(taskListID, taskID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting task: %v", err)), nil
+			return nil, nil, toolErr("getting task: %v", err)
 		}
 
 		title := task.Title
@@ -647,49 +662,48 @@ func handleGetTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			fmt.Fprintf(&sb, "\n- Web View Link: %s", task.WebViewLink)
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
+		return textResult(sb.String())
 	}
 }
 
 // --- create_task ---
 
-func registerCreateTask(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_task",
-		mcp.WithDescription("Create a new task in a task list."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("task_list_id", mcp.Required(), mcp.Description("The ID of the task list to create the task in.")),
-		mcp.WithString("title", mcp.Required(), mcp.Description("The title of the task.")),
-		mcp.WithString("notes", mcp.Description("Notes/description for the task.")),
-		mcp.WithString("due", mcp.Description("Due date in RFC 3339 format (e.g., \"2024-12-31T23:59:59Z\").")),
-		mcp.WithString("parent", mcp.Description("Parent task ID (for subtasks).")),
-		mcp.WithString("previous", mcp.Description("Previous sibling task ID (for positioning).")),
-	)
-	s.AddTool(tool, handleCreateTask(getClient))
+func registerCreateTask(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "create_task",
+		Description: "Create a new task in a task list.",
+	}
+	mcp.AddTool(s, tool, handleCreateTask(getClient))
 }
 
-func handleCreateTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		taskListID, err := request.RequireString("task_list_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		title, err := request.RequireString("title")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+// createTaskIn is the input schema for create_task.
+type createTaskIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	TaskListID      string `json:"task_list_id" jsonschema:"The ID of the task list to create the task in."`
+	Title           string `json:"title" jsonschema:"The title of the task."`
+	Notes           string `json:"notes,omitempty" jsonschema:"Notes/description for the task."`
+	Due             string `json:"due,omitempty" jsonschema:"Due date in RFC 3339 format (e.g., \"2024-12-31T23:59:59Z\")."`
+	Parent          string `json:"parent,omitempty" jsonschema:"Parent task ID (for subtasks)."`
+	Previous        string `json:"previous,omitempty" jsonschema:"Previous sibling task ID (for positioning)."`
+}
 
-		notes := request.GetString("notes", "")
-		due := request.GetString("due", "")
-		parent := request.GetString("parent", "")
-		previous := request.GetString("previous", "")
+func handleCreateTask(getClient httpClientFunc) mcp.ToolHandlerFor[createTaskIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createTaskIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		taskListID := in.TaskListID
+		title := in.Title
+
+		notes := in.Notes
+		due := in.Due
+		parent := in.Parent
+		previous := in.Previous
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		body := &tasks.Task{Title: title}
@@ -710,7 +724,7 @@ func handleCreateTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		result, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating task: %v", err)), nil
+			return nil, nil, toolErr("creating task: %v", err)
 		}
 
 		var sb strings.Builder
@@ -730,53 +744,50 @@ func handleCreateTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			fmt.Fprintf(&sb, "\n- Web View Link: %s", result.WebViewLink)
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
+		return textResult(sb.String())
 	}
 }
 
 // --- update_task ---
 
-func registerUpdateTask(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("update_task",
-		mcp.WithDescription("Update an existing task."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("task_list_id", mcp.Required(), mcp.Description("The ID of the task list containing the task.")),
-		mcp.WithString("task_id", mcp.Required(), mcp.Description("The ID of the task to update.")),
-		mcp.WithString("title", mcp.Description("New title for the task.")),
-		mcp.WithString("notes", mcp.Description("New notes/description for the task.")),
-		mcp.WithString("status", mcp.Description("New status (\"needsAction\" or \"completed\").")),
-		mcp.WithString("due", mcp.Description("New due date in RFC 3339 format.")),
-	)
-	s.AddTool(tool, handleUpdateTask(getClient))
+func registerUpdateTask(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "update_task",
+		Description: "Update an existing task.",
+	}
+	mcp.AddTool(s, tool, handleUpdateTask(getClient))
 }
 
-func handleUpdateTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// updateTaskIn is the input schema for update_task.
+type updateTaskIn struct {
+	UserGoogleEmail string  `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	TaskListID      string  `json:"task_list_id" jsonschema:"The ID of the task list containing the task."`
+	TaskID          string  `json:"task_id" jsonschema:"The ID of the task to update."`
+	Title           *string `json:"title,omitempty" jsonschema:"New title for the task."`
+	Notes           *string `json:"notes,omitempty" jsonschema:"New notes/description for the task."`
+	Status          *string `json:"status,omitempty" jsonschema:"New status (\"needsAction\" or \"completed\")."`
+	Due             *string `json:"due,omitempty" jsonschema:"New due date in RFC 3339 format."`
+}
+
+func handleUpdateTask(getClient httpClientFunc) mcp.ToolHandlerFor[updateTaskIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateTaskIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		taskListID, err := request.RequireString("task_list_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		taskID, err := request.RequireString("task_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		taskListID := in.TaskListID
+		taskID := in.TaskID
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Fetch current task to preserve existing fields.
 		current, err := svc.Tasks.Get(taskListID, taskID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting current task: %v", err)), nil
+			return nil, nil, toolErr("getting current task: %v", err)
 		}
-
-		args := request.GetArguments()
 
 		body := &tasks.Task{
 			Id:     taskID,
@@ -784,26 +795,29 @@ func handleUpdateTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			Status: current.Status,
 		}
 
-		if _, ok := args["title"]; ok {
-			body.Title = request.GetString("title", "")
+		if in.Title != nil {
+			body.Title = *in.Title
 		}
-		if _, ok := args["status"]; ok {
-			body.Status = request.GetString("status", "needsAction")
+		if in.Status != nil {
+			body.Status = *in.Status
+			if body.Status == "" {
+				body.Status = "needsAction"
+			}
 		}
-		if v, ok := args["notes"]; ok {
-			body.Notes, _ = v.(string)
+		if in.Notes != nil {
+			body.Notes = *in.Notes
 		} else if current.Notes != "" {
 			body.Notes = current.Notes
 		}
-		if v, ok := args["due"]; ok {
-			body.Due, _ = v.(string)
+		if in.Due != nil {
+			body.Due = *in.Due
 		} else if current.Due != "" {
 			body.Due = current.Due
 		}
 
 		result, err := svc.Tasks.Update(taskListID, taskID, body).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("updating task: %v", err)), nil
+			return nil, nil, toolErr("updating task: %v", err)
 		}
 
 		var sb strings.Builder
@@ -823,91 +837,89 @@ func handleUpdateTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			fmt.Fprintf(&sb, "\n- Completed: %s", *result.Completed)
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
+		return textResult(sb.String())
 	}
 }
 
 // --- delete_task ---
 
-func registerDeleteTask(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("delete_task",
-		mcp.WithDescription("Delete a task from a task list."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("task_list_id", mcp.Required(), mcp.Description("The ID of the task list containing the task.")),
-		mcp.WithString("task_id", mcp.Required(), mcp.Description("The ID of the task to delete.")),
-	)
-	s.AddTool(tool, handleDeleteTask(getClient))
+func registerDeleteTask(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "delete_task",
+		Description: "Delete a task from a task list.",
+	}
+	mcp.AddTool(s, tool, handleDeleteTask(getClient))
 }
 
-func handleDeleteTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// deleteTaskIn is the input schema for delete_task.
+type deleteTaskIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	TaskListID      string `json:"task_list_id" jsonschema:"The ID of the task list containing the task."`
+	TaskID          string `json:"task_id" jsonschema:"The ID of the task to delete."`
+}
+
+func handleDeleteTask(getClient httpClientFunc) mcp.ToolHandlerFor[deleteTaskIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteTaskIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		taskListID, err := request.RequireString("task_list_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		taskID, err := request.RequireString("task_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		taskListID := in.TaskListID
+		taskID := in.TaskID
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		err = svc.Tasks.Delete(taskListID, taskID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("deleting task: %v", err)), nil
+			return nil, nil, toolErr("deleting task: %v", err)
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf(
+		return textResult(fmt.Sprintf(
 			"Task %s has been deleted from task list %s for %s.",
 			taskID, taskListID, email,
-		)), nil
+		))
 	}
 }
 
 // --- move_task ---
 
-func registerMoveTask(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("move_task",
-		mcp.WithDescription("Move a task to a different position or parent within the same list, or to a different list."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("task_list_id", mcp.Required(), mcp.Description("The ID of the current task list containing the task.")),
-		mcp.WithString("task_id", mcp.Required(), mcp.Description("The ID of the task to move.")),
-		mcp.WithString("parent", mcp.Description("New parent task ID (for making it a subtask).")),
-		mcp.WithString("previous", mcp.Description("Previous sibling task ID (for positioning).")),
-		mcp.WithString("destination_task_list", mcp.Description("Destination task list ID (for moving between lists).")),
-	)
-	s.AddTool(tool, handleMoveTask(getClient))
+func registerMoveTask(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "move_task",
+		Description: "Move a task to a different position or parent within the same list, or to a different list.",
+	}
+	mcp.AddTool(s, tool, handleMoveTask(getClient))
 }
 
-func handleMoveTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		taskListID, err := request.RequireString("task_list_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		taskID, err := request.RequireString("task_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+// moveTaskIn is the input schema for move_task.
+type moveTaskIn struct {
+	UserGoogleEmail     string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	TaskListID          string `json:"task_list_id" jsonschema:"The ID of the current task list containing the task."`
+	TaskID              string `json:"task_id" jsonschema:"The ID of the task to move."`
+	Parent              string `json:"parent,omitempty" jsonschema:"New parent task ID (for making it a subtask)."`
+	Previous            string `json:"previous,omitempty" jsonschema:"Previous sibling task ID (for positioning)."`
+	DestinationTaskList string `json:"destination_task_list,omitempty" jsonschema:"Destination task list ID (for moving between lists)."`
+}
 
-		parent := request.GetString("parent", "")
-		previous := request.GetString("previous", "")
-		destinationTaskList := request.GetString("destination_task_list", "")
+func handleMoveTask(getClient httpClientFunc) mcp.ToolHandlerFor[moveTaskIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in moveTaskIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		taskListID := in.TaskListID
+		taskID := in.TaskID
+
+		parent := in.Parent
+		previous := in.Previous
+		destinationTaskList := in.DestinationTaskList
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		call := svc.Tasks.Move(taskListID, taskID)
@@ -923,7 +935,7 @@ func handleMoveTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		result, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("moving task: %v", err)), nil
+			return nil, nil, toolErr("moving task: %v", err)
 		}
 
 		var sb strings.Builder
@@ -954,45 +966,47 @@ func handleMoveTask(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			fmt.Fprintf(&sb, "\n- Move Details: %s", strings.Join(moveDetails, ", "))
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
+		return textResult(sb.String())
 	}
 }
 
 // --- clear_completed_tasks ---
 
-func registerClearCompletedTasks(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("clear_completed_tasks",
-		mcp.WithDescription("Clear all completed tasks from a task list. The tasks will be marked as hidden."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("task_list_id", mcp.Required(), mcp.Description("The ID of the task list to clear completed tasks from.")),
-	)
-	s.AddTool(tool, handleClearCompletedTasks(getClient))
+func registerClearCompletedTasks(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "clear_completed_tasks",
+		Description: "Clear all completed tasks from a task list. The tasks will be marked as hidden.",
+	}
+	mcp.AddTool(s, tool, handleClearCompletedTasks(getClient))
 }
 
-func handleClearCompletedTasks(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// clearCompletedTasksIn is the input schema for clear_completed_tasks.
+type clearCompletedTasksIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	TaskListID      string `json:"task_list_id" jsonschema:"The ID of the task list to clear completed tasks from."`
+}
+
+func handleClearCompletedTasks(getClient httpClientFunc) mcp.ToolHandlerFor[clearCompletedTasksIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in clearCompletedTasksIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		taskListID, err := request.RequireString("task_list_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		taskListID := in.TaskListID
 
 		svc, err := newTasksService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		err = svc.Tasks.Clear(taskListID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("clearing completed tasks: %v", err)), nil
+			return nil, nil, toolErr("clearing completed tasks: %v", err)
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf(
+		return textResult(fmt.Sprintf(
 			"All completed tasks have been cleared from task list %s for %s. The tasks are now hidden and won't appear in default task list views.",
 			taskListID, email,
-		)), nil
+		))
 	}
 }

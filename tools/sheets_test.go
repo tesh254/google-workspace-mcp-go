@@ -197,12 +197,12 @@ func TestSheetsParseA1Range(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		rangeName  string
-		sheetInfos []sheetInfo
-		wantErr    bool
+		name        string
+		rangeName   string
+		sheetInfos  []sheetInfo
+		wantErr     bool
 		errContains string
-		check      func(t *testing.T, gr *sheetsGridRange)
+		check       func(t *testing.T, gr *sheetsGridRange)
 	}{
 		{
 			name:       "simple range A1:B2 defaults to first sheet",
@@ -356,8 +356,8 @@ func TestSheetsGridRangeToMap(t *testing.T) {
 			},
 		},
 		{
-			name: "only sheetId when no flags set",
-			gr:   sheetsGridRange{SheetID: 7},
+			name:     "only sheetId when no flags set",
+			gr:       sheetsGridRange{SheetID: 7},
 			wantKeys: []string{"sheetId"},
 			check: func(t *testing.T, m map[string]int64) {
 				if len(m) != 1 {
@@ -652,7 +652,7 @@ func TestSheetsSummarizeConditionalRule(t *testing.T) {
 					},
 				},
 			},
-			index: 0,
+			index:        0,
 			wantContains: []string{"[0]", "NUMBER_GREATER", "values=[100]", "bg #FF0000"},
 		},
 		{
@@ -668,7 +668,7 @@ func TestSheetsSummarizeConditionalRule(t *testing.T) {
 					},
 				},
 			},
-			index: 1,
+			index:        1,
 			wantContains: []string{"[1]", "BLANK", "text #0000FF"},
 		},
 		{
@@ -686,7 +686,7 @@ func TestSheetsSummarizeConditionalRule(t *testing.T) {
 					},
 				},
 			},
-			index: 2,
+			index:        2,
 			wantContains: []string{"[2]", "gradient", "MIN", "MAX", "#FF0000", "#00FF00"},
 		},
 		{

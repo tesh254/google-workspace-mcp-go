@@ -9,53 +9,50 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// helper to call a handler and return the text content, failing on error.
-func callHandlerOK(t *testing.T, handler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error), args map[string]any) string {
+// helper to call a typed handler and return the text content, failing on error.
+func callHandlerOK[In, Out any](t *testing.T, handler mcp.ToolHandlerFor[In, Out], name string, in In) string {
 	t.Helper()
-	req := mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Arguments: args,
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Name: name,
 		},
 	}
-	result, err := handler(context.Background(), req)
+	result, _, err := handler(context.Background(), req, in)
 	if err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
 	if result.IsError {
-		tc := result.Content[0].(mcp.TextContent)
+		tc := result.Content[0].(*mcp.TextContent)
 		t.Fatalf("handler returned tool error: %s", tc.Text)
 	}
 	if len(result.Content) == 0 {
 		t.Fatal("handler returned empty content")
 	}
-	tc, ok := result.Content[0].(mcp.TextContent)
+	tc, ok := result.Content[0].(*mcp.TextContent)
 	if !ok {
 		t.Fatalf("expected TextContent, got %T", result.Content[0])
 	}
 	return tc.Text
 }
 
-// helper to call a handler and return the error text, failing if no error.
-func callHandlerErr(t *testing.T, handler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error), args map[string]any) string {
+// helper to call a typed handler and return the tool-level error text, failing if no error.
+// Handlers report tool-level errors by returning a regular error, which the
+// SDK wrapper converts into an IsError result whose text is err.Error().
+func callHandlerErr[In, Out any](t *testing.T, handler mcp.ToolHandlerFor[In, Out], name string, in In) string {
 	t.Helper()
-	req := mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Arguments: args,
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Name: name,
 		},
 	}
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handler returned unexpected Go error: %v", err)
+	_, _, err := handler(context.Background(), req, in)
+	if err == nil {
+		t.Fatalf("expected tool error, got success")
 	}
-	if !result.IsError {
-		tc := result.Content[0].(mcp.TextContent)
-		t.Fatalf("expected tool error, got success: %s", tc.Text)
-	}
-	tc := result.Content[0].(mcp.TextContent)
-	return tc.Text
+	return err.Error()
 }
 
 // --- search_gmail_messages ---
@@ -72,9 +69,9 @@ func TestGmailMockSearchMessages(t *testing.T) {
 			},
 		})
 		handler := handleSearchGmailMessages(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"query":             "in:inbox",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "search_gmail_messages", searchGmailMessagesIn{
+			Query:           "in:inbox",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Found 2 messages") {
 			t.Errorf("expected 'Found 2 messages', got:\n%s", text)
@@ -97,9 +94,9 @@ func TestGmailMockSearchMessages(t *testing.T) {
 			},
 		})
 		handler := handleSearchGmailMessages(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"query":             "from:nobody@example.com",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "search_gmail_messages", searchGmailMessagesIn{
+			Query:           "from:nobody@example.com",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No messages found") {
 			t.Errorf("expected 'No messages found', got:\n%s", text)
@@ -117,10 +114,10 @@ func TestGmailMockSearchMessages(t *testing.T) {
 			},
 		})
 		handler := handleSearchGmailMessages(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"query":             "in:inbox",
-			"user_google_email": "test@example.com",
-			"page_size":         float64(1),
+		text := callHandlerOK(t, handler, "search_gmail_messages", searchGmailMessagesIn{
+			Query:           "in:inbox",
+			UserGoogleEmail: "test@example.com",
+			PageSize:        1,
 		})
 		if !strings.Contains(text, "token123") {
 			t.Errorf("expected pagination token in output, got:\n%s", text)
@@ -156,9 +153,9 @@ func TestGmailMockGetMessageContent(t *testing.T) {
 			},
 		})
 		handler := handleGetGmailMessageContent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"message_id":        "msg001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_gmail_message_content", getGmailMessageContentIn{
+			MessageID:       "msg001",
+			UserGoogleEmail: "test@example.com",
 		})
 		for _, want := range []string{"Subject: Test Email", "From:    alice@example.com", "To:      bob@example.com", bodyText, "Message-ID: <msg001@example.com>"} {
 			if !strings.Contains(text, want) {
@@ -199,9 +196,9 @@ func TestGmailMockGetMessageContent(t *testing.T) {
 			},
 		})
 		handler := handleGetGmailMessageContent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"message_id":        "msg002",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_gmail_message_content", getGmailMessageContentIn{
+			MessageID:       "msg002",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "ATTACHMENTS") {
 			t.Errorf("expected ATTACHMENTS section in output")
@@ -254,9 +251,9 @@ func TestGmailMockGetMessagesContentBatch(t *testing.T) {
 			},
 		})
 		handler := handleGetGmailMessagesContentBatch(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"message_ids":       []any{"msg001", "msg002"},
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_gmail_messages_content_batch", getGmailMessagesContentBatchIn{
+			MessageIDs:      []string{"msg001", "msg002"},
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Retrieved 2 messages") {
 			t.Errorf("expected 'Retrieved 2 messages', got:\n%s", text)
@@ -284,10 +281,10 @@ func TestGmailMockGetMessagesContentBatch(t *testing.T) {
 			},
 		})
 		handler := handleGetGmailMessagesContentBatch(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"message_ids":       []any{"msg001"},
-			"format":            "metadata",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_gmail_messages_content_batch", getGmailMessagesContentBatchIn{
+			MessageIDs:      []string{"msg001"},
+			Format:          "metadata",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Retrieved 1 messages") {
 			t.Errorf("expected 'Retrieved 1 messages', got:\n%s", text)
@@ -309,11 +306,11 @@ func TestGmailMockSendMessage(t *testing.T) {
 			},
 		})
 		handler := handleSendGmailMessage(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"to":                "recipient@example.com",
-			"subject":           "Test Subject",
-			"body":              "Hello from tests!",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "send_gmail_message", sendGmailMessageIn{
+			To:              "recipient@example.com",
+			Subject:         "Test Subject",
+			Body:            "Hello from tests!",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Email sent successfully") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -337,11 +334,11 @@ func TestGmailMockDraftMessage(t *testing.T) {
 			},
 		})
 		handler := handleDraftGmailMessage(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"subject":           "Draft Subject",
-			"body":              "Draft body content",
-			"to":                "someone@example.com",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "draft_gmail_message", draftGmailMessageIn{
+			Subject:         "Draft Subject",
+			Body:            "Draft body content",
+			To:              "someone@example.com",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Draft created successfully") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -361,10 +358,10 @@ func TestGmailMockDraftMessage(t *testing.T) {
 			},
 		})
 		handler := handleDraftGmailMessage(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"subject":           "No Recipient Draft",
-			"body":              "Just saving a draft",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "draft_gmail_message", draftGmailMessageIn{
+			Subject:         "No Recipient Draft",
+			Body:            "Just saving a draft",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Draft created successfully") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -386,8 +383,8 @@ func TestGmailMockListLabels(t *testing.T) {
 			},
 		})
 		handler := handleListGmailLabels(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_gmail_labels", listGmailLabelsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Found 3 labels") {
 			t.Errorf("expected 'Found 3 labels', got:\n%s", text)
@@ -413,8 +410,8 @@ func TestGmailMockListLabels(t *testing.T) {
 			},
 		})
 		handler := handleListGmailLabels(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_gmail_labels", listGmailLabelsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No labels found") {
 			t.Errorf("expected 'No labels found', got:\n%s", text)
@@ -435,9 +432,9 @@ func TestGmailMockAPIError(t *testing.T) {
 			"/gmail/v1/users/me/messages": {code: 404, body: `{"error": {"code": 404, "message": "Not Found", "status": "NOT_FOUND"}}`},
 		})
 		handler := handleSearchGmailMessages(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"query":             "in:inbox",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "search_gmail_messages", searchGmailMessagesIn{
+			Query:           "in:inbox",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Gmail API error") {
 			t.Errorf("expected 'Gmail API error' in error message, got:\n%s", text)
@@ -449,9 +446,9 @@ func TestGmailMockAPIError(t *testing.T) {
 			"/gmail/v1/users/me/messages/nonexistent": {code: 404, body: `{"error": {"code": 404, "message": "Not Found"}}`},
 		})
 		handler := handleGetGmailMessageContent(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"message_id":        "nonexistent",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "get_gmail_message_content", getGmailMessageContentIn{
+			MessageID:       "nonexistent",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Gmail API error") {
 			t.Errorf("expected error message, got:\n%s", text)
@@ -463,11 +460,11 @@ func TestGmailMockAPIError(t *testing.T) {
 			"/gmail/v1/users/me/messages/send": {code: 500, body: `{"error": {"code": 500, "message": "Internal Server Error"}}`},
 		})
 		handler := handleSendGmailMessage(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"to":                "someone@example.com",
-			"subject":           "Test",
-			"body":              "Test body",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "send_gmail_message", sendGmailMessageIn{
+			To:              "someone@example.com",
+			Subject:         "Test",
+			Body:            "Test body",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Gmail API error") {
 			t.Errorf("expected error message, got:\n%s", text)
@@ -479,8 +476,8 @@ func TestGmailMockAPIError(t *testing.T) {
 			"/gmail/v1/users/me/labels": {code: 403, body: `{"error": {"code": 403, "message": "Forbidden"}}`},
 		})
 		handler := handleListGmailLabels(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "list_gmail_labels", listGmailLabelsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Gmail API error") {
 			t.Errorf("expected error message, got:\n%s", text)
@@ -530,9 +527,9 @@ func TestGmailMockGetThreadContent(t *testing.T) {
 			},
 		})
 		handler := handleGetGmailThreadContent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"thread_id":         "thread001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_gmail_thread_content", getGmailThreadContentIn{
+			ThreadID:        "thread001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Thread ID: thread001") {
 			t.Errorf("expected thread ID in output")
@@ -592,9 +589,9 @@ func TestGmailMockGetThreadsContentBatch(t *testing.T) {
 			},
 		})
 		handler := handleGetGmailThreadsContentBatch(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"thread_ids":        []any{"thread001", "thread002"},
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_gmail_threads_content_batch", getGmailThreadsContentBatchIn{
+			ThreadIDs:       []string{"thread001", "thread002"},
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Retrieved 2 threads") {
 			t.Errorf("expected 'Retrieved 2 threads', got:\n%s", text)
@@ -619,10 +616,10 @@ func TestGmailMockManageLabel(t *testing.T) {
 			},
 		})
 		handler := handleManageGmailLabel(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"action":            "create",
-			"name":              "NewLabel",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "manage_gmail_label", manageGmailLabelIn{
+			Action:          "create",
+			Name:            "NewLabel",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Label created successfully") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -654,8 +651,8 @@ func TestGmailMockListFilters(t *testing.T) {
 			},
 		})
 		handler := handleListGmailFilters(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_gmail_filters", listGmailFiltersIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Found 1 filter") {
 			t.Errorf("expected 'Found 1 filter', got:\n%s", text)
@@ -673,8 +670,8 @@ func TestGmailMockListFilters(t *testing.T) {
 			"/gmail/v1/users/me/settings/filters": map[string]any{},
 		})
 		handler := handleListGmailFilters(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_gmail_filters", listGmailFiltersIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No filters found") {
 			t.Errorf("expected 'No filters found', got:\n%s", text)
@@ -692,10 +689,10 @@ func TestGmailMockCreateFilter(t *testing.T) {
 			},
 		})
 		handler := handleCreateGmailFilter(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"criteria":          map[string]any{"from": "noreply@example.com"},
-			"action":            map[string]any{"addLabelIds": []any{"Label_1"}},
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_gmail_filter", createGmailFilterIn{
+			Criteria:        map[string]any{"from": "noreply@example.com"},
+			Action:          map[string]any{"addLabelIds": []any{"Label_1"}},
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Filter created successfully") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -722,9 +719,9 @@ func TestGmailMockDeleteFilter(t *testing.T) {
 			},
 		})
 		handler := handleDeleteGmailFilter(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"filter_id":         "filter001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "delete_gmail_filter", deleteGmailFilterIn{
+			FilterID:        "filter001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Filter deleted successfully") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -745,11 +742,11 @@ func TestGmailMockModifyMessageLabels(t *testing.T) {
 			},
 		})
 		handler := handleModifyGmailMessageLabels(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"message_id":        "msg001",
-			"add_label_ids":     []any{"STARRED"},
-			"remove_label_ids":  []any{"INBOX"},
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "modify_gmail_message_labels", modifyGmailMessageLabelsIn{
+			MessageID:       "msg001",
+			AddLabelIds:     []string{"STARRED"},
+			RemoveLabelIds:  []string{"INBOX"},
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Labels modified for message msg001") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -772,10 +769,10 @@ func TestGmailMockBatchModifyMessageLabels(t *testing.T) {
 			"/gmail/v1/users/me/messages/batchModify": `{}`,
 		})
 		handler := handleBatchModifyGmailMessageLabels(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"message_ids":       []any{"msg001", "msg002"},
-			"add_label_ids":     []any{"Label_1"},
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "batch_modify_gmail_message_labels", batchModifyGmailMessageLabelsIn{
+			MessageIDs:      []string{"msg001", "msg002"},
+			AddLabelIds:     []string{"Label_1"},
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Labels modified for 2 messages") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -795,10 +792,10 @@ func TestGmailMockGetAttachmentContent(t *testing.T) {
 			},
 		})
 		handler := handleGetGmailAttachmentContent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"message_id":        "msg001",
-			"attachment_id":     "att001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_gmail_attachment_content", getGmailAttachmentContentIn{
+			MessageID:       "msg001",
+			AttachmentID:    "att001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Attachment downloaded successfully") {
 			t.Errorf("expected success message, got:\n%s", text)
