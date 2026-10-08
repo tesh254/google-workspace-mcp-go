@@ -11,6 +11,7 @@ import (
 
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/magks/google-workspace-mcp-go/auth"
 	"github.com/magks/google-workspace-mcp-go/server"
 	"github.com/magks/google-workspace-mcp-go/tools"
 )
@@ -74,14 +75,34 @@ func run() error {
 // requires Origin validation for local HTTP servers.
 func serveStreamableHTTP(cfg server.Config, s *mcp.Server) error {
 	addr := fmt.Sprintf("%s:%d", cfg.HTTPHost, cfg.HTTPPort)
-	handler := http.NewCrossOriginProtection().Handler(
-		mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{
-			Stateless: true,
-			Logger:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
-		}),
-	)
+	var handler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{
+		Stateless: true,
+		Logger:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	})
+
+	// Bearer authentication per the MCP authorization framework, enabled
+	// when MCP_AUTH_JWKS_URL is configured. JWTs are verified against the
+	// authorization server's JWKS; failures respond 401 with a
+	// WWW-Authenticate header advertising the protected resource metadata.
+	if authJWKS := os.Getenv("MCP_AUTH_JWKS_URL"); authJWKS != "" {
+		middleware, err := auth.BearerMiddleware(&auth.BearerConfig{
+			JWKSURL:             authJWKS,
+			Issuer:              os.Getenv("MCP_AUTH_ISSUER"),
+			Audience:            os.Getenv("MCP_AUTH_AUDIENCE"),
+			ResourceMetadataURL: os.Getenv("MCP_RESOURCE_METADATA_URL"),
+			Scopes:              strings.Fields(os.Getenv("MCP_AUTH_SCOPES")),
+		})
+		if err != nil {
+			return fmt.Errorf("configuring bearer auth: %w", err)
+		}
+		handler = middleware(handler)
+		fmt.Fprintln(os.Stderr, "bearer-token authentication enabled (MCP_AUTH_JWKS_URL set)")
+	}
+
+	// Cross-origin / DNS rebinding protection wraps the outermost layer.
+	protected := http.NewCrossOriginProtection().Handler(handler)
 	fmt.Fprintf(os.Stderr, "serving streamable-http (stateless) on http://%s/mcp\n", addr)
-	return http.ListenAndServe(addr, handler)
+	return http.ListenAndServe(addr, protected)
 }
 
 // parseFlags parses CLI arguments into a server.Config.

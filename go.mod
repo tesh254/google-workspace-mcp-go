@@ -3,6 +3,7 @@ module github.com/magks/google-workspace-mcp-go
 go 1.27.0
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/oauth2 v0.35.0
