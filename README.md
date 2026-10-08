@@ -8,20 +8,20 @@ The [original Python server](https://github.com/taylorwilsdon/google_workspace_m
 
 This Go rewrite exists for a different use case: **single-user, local AI tool use** — specifically Claude Code, Cursor, and similar MCP clients running on your machine. If you want Google Workspace integration with minimal memory usage and without the overhead of a Python runtime, this is for you.
 
-|                      | Python (original)          | Go (this repo)        |
-| -------------------- | -------------------------- | --------------------- |
-| Tools                | 137                        | 137                   |
-| Binary/install size  | Python + virtualenv + deps | 27MB single binary    |
-| Startup time         | ~3s ([measured](BENCHMARKS.md))  | ~10ms ([measured](BENCHMARKS.md)) |
-| Runtime requirements | Python 3.10+, uv/pip       | None                  |
-| Transport            | stdio, streamable HTTP     | stdio                 |
-| Auth                 | OAuth 2.0 + OAuth 2.1      | OAuth 2.0             |
-| Multi-user           | Yes (session mgmt, Valkey) | No (single-user)      |
-| HTTP server mode     | Yes                        | No                    |
+|                      | Python (original)          | Go (this repo)                        |
+| -------------------- | -------------------------- | ------------------------------------- |
+| Tools                | 137                        | 137                                   |
+| Binary/install size  | Python + virtualenv + deps | 27MB single binary                    |
+| Startup time         | ~3s ([measured](BENCHMARKS.md))  | ~10ms ([measured](BENCHMARKS.md))   |
+| Runtime requirements | Python 3.10+, uv/pip       | None                                  |
+| Transport            | stdio, streamable HTTP     | stdio, streamable HTTP (stateless)    |
+| Auth                 | OAuth 2.0 + OAuth 2.1      | Google OAuth 2.0 (+ optional bearer auth on HTTP) |
+| Multi-user           | Yes (session mgmt, Valkey) | Per-request identity; creds on disk   |
+| HTTP server mode     | Yes (sessions/Valkey)      | Yes (stateless, MCP spec 2026-07-28)  |
 
-**Use the Go version if**: you run MCP tools locally in Claude Code or similar, want low memory usage, and don't need multi-user or HTTP server mode.
+**Use the Go version if**: you run MCP tools locally in Claude Code or similar, want low memory usage, or want a simple dependency-free HTTP server without distributed session storage.
 
-**Use the Python version if**: you need multi-user support, OAuth 2.1, HTTP transport, or hosted/containerized deployment.
+**Use the Python version if**: you need hosted multi-user deployments with Valkey-backed session management.
 
 ## Quick start
 
@@ -165,11 +165,15 @@ On first use, you'll need to authenticate with Google:
 
 ### CLI flags
 
-| Flag          | Description                                                              | Default    |
-| ------------- | ------------------------------------------------------------------------ | ---------- |
-| `--tools`     | Space-separated list of services to enable (e.g. `gmail drive calendar`) | all        |
-| `--tool-tier` | Tool tier: `core`, `extended`, or `complete`                             | `complete` |
-| `--read-only` | Enable read-only mode (disable all write tools)                          | `false`    |
+| Flag             | Description                                                              | Default    |
+| ---------------- | ------------------------------------------------------------------------ | ---------- |
+| `--tools`        | Space-separated list of services to enable (e.g. `gmail drive calendar`) | all        |
+| `--tool-tier`    | Tool tier: `core`, `extended`, or `complete`                             | `complete` |
+| `--read-only`    | Enable read-only mode (disable all write tools)                          | `false`    |
+| `--transport`    | `stdio` (local clients) or `streamable-http`                             | `stdio`    |
+| `--http-host`    | Bind host for `streamable-http` (keep on localhost unless fronting)      | `127.0.0.1`|
+| `--http-port`    | Bind port for `streamable-http`                                          | `8080`     |
+| `--single-user`  | Single-user mode (credential store holds one user)                       | `false`    |
 
 ### Environment variables
 
