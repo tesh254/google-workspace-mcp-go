@@ -19,9 +19,9 @@ func TestSlidesMockCreatePresentation(t *testing.T) {
 			},
 		})
 		handler := handleCreatePresentation(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"title":             "Q1 Review",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_presentation", createPresentationIn{
+			Title:           "Q1 Review",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Presentation Created Successfully") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -81,9 +81,9 @@ func TestSlidesMockGetPresentation(t *testing.T) {
 			},
 		})
 		handler := handleGetPresentation(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"presentation_id":   "pres001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_presentation", getPresentationIn{
+			PresentationID:  "pres001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Company Update") {
 			t.Errorf("expected title in output, got:\n%s", text)
@@ -108,9 +108,9 @@ func TestSlidesMockAPIError(t *testing.T) {
 			"/v1/presentations": {code: 500, body: `{"error": {"code": 500, "message": "Internal Server Error"}}`},
 		})
 		handler := handleCreatePresentation(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"title":             "Bad Pres",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "create_presentation", createPresentationIn{
+			Title:           "Bad Pres",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "creating presentation") {
 			t.Errorf("expected presentation creation error, got:\n%s", text)
@@ -122,9 +122,9 @@ func TestSlidesMockAPIError(t *testing.T) {
 			"/v1/presentations/nonexistent": {code: 404, body: `{"error": {"code": 404, "message": "Not Found"}}`},
 		})
 		handler := handleGetPresentation(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"presentation_id":   "nonexistent",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "get_presentation", getPresentationIn{
+			PresentationID:  "nonexistent",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "getting presentation") {
 			t.Errorf("expected get presentation error, got:\n%s", text)

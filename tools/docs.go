@@ -8,8 +8,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	docs "google.golang.org/api/docs/v1"
 	drive "google.golang.org/api/drive/v3"
 	"google.golang.org/api/googleapi"
@@ -19,7 +18,7 @@ import (
 )
 
 // RegisterDocsTools registers all Docs tools with the MCP server.
-func RegisterDocsTools(s *mcpserver.MCPServer, _ server.Config) {
+func RegisterDocsTools(s *mcp.Server, _ server.Config) {
 	getClient := clientFuncFromCache(google.DefaultClientCache())
 
 	// Read tools (US-013)
@@ -62,31 +61,36 @@ func newDocsService(ctx context.Context, getClient httpClientFunc, email string)
 
 // --- search_docs ---
 
-func registerSearchDocs(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("search_docs",
-		mcp.WithDescription("Searches for Google Docs by name using Drive API (mimeType filter)."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Search query string for document names.")),
-		mcp.WithNumber("page_size", mcp.Description("Number of results to return. Defaults to 10.")),
-	)
-	s.AddTool(tool, handleSearchDocs(getClient))
+func registerSearchDocs(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "search_docs",
+		Description: "Searches for Google Docs by name using Drive API (mimeType filter).",
+	}
+	mcp.AddTool(s, tool, handleSearchDocs(getClient))
 }
 
-func handleSearchDocs(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// searchDocsIn is the input schema for search_docs.
+type searchDocsIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	Query           string `json:"query" jsonschema:"Search query string for document names."`
+	PageSize        int    `json:"page_size,omitempty" jsonschema:"Number of results to return. Defaults to 10."`
+}
+
+func handleSearchDocs(getClient httpClientFunc) mcp.ToolHandlerFor[searchDocsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchDocsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		query, err := request.RequireString("query")
-		if err != nil {
-			return mcp.NewToolResultError("query is required"), nil
+		query := in.Query
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 10
 		}
-		pageSize := request.GetInt("page_size", 10)
 
 		driveSvc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		escaped := strings.ReplaceAll(query, "'", "\\'")
@@ -100,12 +104,12 @@ func handleSearchDocs(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			IncludeItemsFromAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		files := resp.Files
 		if len(files) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No Google Docs found matching '%s'.", query)), nil
+			return textResult(fmt.Sprintf("No Google Docs found matching '%s'.", query))
 		}
 
 		var b strings.Builder
@@ -121,35 +125,37 @@ func handleSearchDocs(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			}
 			fmt.Fprintf(&b, "\n- %s (ID: %s) Modified: %s Link: %s", f.Name, f.Id, modified, link)
 		}
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- get_doc_content ---
 
-func registerGetDocContent(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_doc_content",
-		mcp.WithDescription("Retrieves content of a Google Doc or a Drive file (like .docx) identified by document_id.\n- Native Google Docs: Fetches content via Docs API.\n- Office files (.docx, etc.) stored in Drive: Downloads via Drive API and extracts text."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("The ID of the Google Doc or Drive file to fetch.")),
-	)
-	s.AddTool(tool, handleGetDocContent(getClient))
+func registerGetDocContent(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_doc_content",
+		Description: "Retrieves content of a Google Doc or a Drive file (like .docx) identified by document_id.\n- Native Google Docs: Fetches content via Docs API.\n- Office files (.docx, etc.) stored in Drive: Downloads via Drive API and extracts text.",
+	}
+	mcp.AddTool(s, tool, handleGetDocContent(getClient))
 }
 
-func handleGetDocContent(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// getDocContentIn is the input schema for get_doc_content.
+type getDocContentIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string `json:"document_id" jsonschema:"The ID of the Google Doc or Drive file to fetch."`
+}
+
+func handleGetDocContent(getClient httpClientFunc) mcp.ToolHandlerFor[getDocContentIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getDocContentIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
-		}
+		documentID := in.DocumentID
 
 		driveSvc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Get file metadata
@@ -158,7 +164,7 @@ func handleGetDocContent(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			SupportsAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		mimeType := fileMeta.MimeType
@@ -177,12 +183,12 @@ func handleGetDocContent(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			// Native Google Doc — use Docs API
 			docsSvc, err := newDocsService(ctx, getClient, email)
 			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
+				return nil, nil, err
 			}
 
 			doc, err := docsSvc.Documents.Get(documentID).IncludeTabsContent(true).Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+				return nil, nil, toolErr("Docs API error: %v", err)
 			}
 
 			bodyText = extractDocText(doc)
@@ -190,12 +196,12 @@ func handleGetDocContent(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			// Non-native file — download via Drive and try UTF-8 decode
 			resp, err := driveSvc.Files.Get(documentID).SupportsAllDrives(true).Download()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Drive API download error: %v", err)), nil
+				return nil, nil, toolErr("Drive API download error: %v", err)
 			}
 			defer resp.Body.Close()
 			data, err := io.ReadAll(resp.Body)
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("reading download: %v", err)), nil
+				return nil, nil, toolErr("reading download: %v", err)
 			}
 			bodyText = tryDecodeUTF8(data, mimeType)
 		}
@@ -203,7 +209,7 @@ func handleGetDocContent(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		header := fmt.Sprintf("File: \"%s\" (ID: %s, Type: %s)\nLink: %s\n\n--- CONTENT ---\n",
 			fileName, documentID, mimeType, webViewLink)
 
-		return mcp.NewToolResultText(header + bodyText), nil
+		return textResult(header + bodyText)
 	}
 }
 
@@ -304,28 +310,39 @@ func extractTextFromElementsWithDepth(elements []*docs.StructuralElement, tabNam
 
 // --- list_docs_in_folder ---
 
-func registerListDocsInFolder(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_docs_in_folder",
-		mcp.WithDescription("Lists Google Docs within a specific Drive folder."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("folder_id", mcp.Description("The ID of the folder to list docs from. Defaults to 'root'.")),
-		mcp.WithNumber("page_size", mcp.Description("Maximum number of documents to return. Defaults to 100.")),
-	)
-	s.AddTool(tool, handleListDocsInFolder(getClient))
+func registerListDocsInFolder(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "list_docs_in_folder",
+		Description: "Lists Google Docs within a specific Drive folder.",
+	}
+	mcp.AddTool(s, tool, handleListDocsInFolder(getClient))
 }
 
-func handleListDocsInFolder(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// listDocsInFolderIn is the input schema for list_docs_in_folder.
+type listDocsInFolderIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FolderID        string `json:"folder_id,omitempty" jsonschema:"The ID of the folder to list docs from. Defaults to 'root'."`
+	PageSize        int    `json:"page_size,omitempty" jsonschema:"Maximum number of documents to return. Defaults to 100."`
+}
+
+func handleListDocsInFolder(getClient httpClientFunc) mcp.ToolHandlerFor[listDocsInFolderIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listDocsInFolderIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		folderID := request.GetString("folder_id", "root")
-		pageSize := request.GetInt("page_size", 100)
+		folderID := in.FolderID
+		if folderID == "" {
+			folderID = "root"
+		}
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 100
+		}
 
 		driveSvc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		q := fmt.Sprintf("'%s' in parents and mimeType='application/vnd.google-apps.document' and trashed=false", folderID)
@@ -338,12 +355,12 @@ func handleListDocsInFolder(getClient httpClientFunc) mcpserver.ToolHandlerFunc 
 			IncludeItemsFromAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		items := resp.Files
 		if len(items) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No Google Docs found in folder '%s'.", folderID)), nil
+			return textResult(fmt.Sprintf("No Google Docs found in folder '%s'.", folderID))
 		}
 
 		var b strings.Builder
@@ -359,42 +376,44 @@ func handleListDocsInFolder(getClient httpClientFunc) mcpserver.ToolHandlerFunc 
 			}
 			fmt.Fprintf(&b, "\n- %s (ID: %s) Modified: %s Link: %s", f.Name, f.Id, modified, link)
 		}
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- create_doc ---
 
-func registerCreateDoc(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_doc",
-		mcp.WithDescription("Creates a new Google Doc and optionally inserts initial content."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("title", mcp.Required(), mcp.Description("The title for the new Google Doc.")),
-		mcp.WithString("content", mcp.Description("Initial text content to insert into the document.")),
-	)
-	s.AddTool(tool, handleCreateDoc(getClient))
+func registerCreateDoc(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "create_doc",
+		Description: "Creates a new Google Doc and optionally inserts initial content.",
+	}
+	mcp.AddTool(s, tool, handleCreateDoc(getClient))
 }
 
-func handleCreateDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// createDocIn is the input schema for create_doc.
+type createDocIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	Title           string `json:"title" jsonschema:"The title for the new Google Doc."`
+	Content         string `json:"content,omitempty" jsonschema:"Initial text content to insert into the document."`
+}
+
+func handleCreateDoc(getClient httpClientFunc) mcp.ToolHandlerFor[createDocIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createDocIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		title, err := request.RequireString("title")
-		if err != nil {
-			return mcp.NewToolResultError("title is required"), nil
-		}
-		content := request.GetString("content", "")
+		title := in.Title
+		content := in.Content
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		doc, err := docsSvc.Documents.Create(&docs.Document{Title: title}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		docID := doc.DocumentId
@@ -413,48 +432,50 @@ func handleCreateDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			}
 			_, err = docsSvc.Documents.BatchUpdate(docID, req).Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Docs API error inserting content: %v", err)), nil
+				return nil, nil, toolErr("Docs API error inserting content: %v", err)
 			}
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", docID)
 		msg := fmt.Sprintf("Created Google Doc '%s' (ID: %s) for %s. Link: %s", title, docID, email, link)
-		return mcp.NewToolResultText(msg), nil
+		return textResult(msg)
 	}
 }
 
 // --- inspect_doc_structure ---
 
-func registerInspectDocStructure(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("inspect_doc_structure",
-		mcp.WithDescription("Essential tool for finding safe insertion points and understanding document structure.\n\nUSE THIS FOR:\n- Finding the correct index for table insertion\n- Understanding document layout before making changes\n- Locating existing tables and their positions\n- Getting document statistics and complexity info\n\nCRITICAL FOR TABLE OPERATIONS:\nALWAYS call this BEFORE creating tables to get a safe insertion index.\n\nWORKFLOW:\nStep 1: Call this function\nStep 2: Note the \"total_length\" value\nStep 3: Use an index < total_length for table insertion\nStep 4: Create your table"),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("ID of the document to inspect.")),
-		mcp.WithBoolean("detailed", mcp.Description("Whether to return detailed structure information. Defaults to false.")),
-	)
-	s.AddTool(tool, handleInspectDocStructure(getClient))
+func registerInspectDocStructure(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "inspect_doc_structure",
+		Description: "Essential tool for finding safe insertion points and understanding document structure.\n\nUSE THIS FOR:\n- Finding the correct index for table insertion\n- Understanding document layout before making changes\n- Locating existing tables and their positions\n- Getting document statistics and complexity info\n\nCRITICAL FOR TABLE OPERATIONS:\nALWAYS call this BEFORE creating tables to get a safe insertion index.\n\nWORKFLOW:\nStep 1: Call this function\nStep 2: Note the \"total_length\" value\nStep 3: Use an index < total_length for table insertion\nStep 4: Create your table",
+	}
+	mcp.AddTool(s, tool, handleInspectDocStructure(getClient))
 }
 
-func handleInspectDocStructure(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// inspectDocStructureIn is the input schema for inspect_doc_structure.
+type inspectDocStructureIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string `json:"document_id" jsonschema:"ID of the document to inspect."`
+	Detailed        bool   `json:"detailed,omitempty" jsonschema:"Whether to return detailed structure information. Defaults to false."`
+}
+
+func handleInspectDocStructure(getClient httpClientFunc) mcp.ToolHandlerFor[inspectDocStructureIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in inspectDocStructureIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
-		}
-		detailed := getBool(request, "detailed", false)
+		documentID := in.DocumentID
+		detailed := in.Detailed
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		doc, err := docsSvc.Documents.Get(documentID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		var result map[string]any
@@ -467,12 +488,12 @@ func handleInspectDocStructure(getClient httpClientFunc) mcpserver.ToolHandlerFu
 
 		jsonBytes, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("JSON encoding error: %v", err)), nil
+			return nil, nil, toolErr("JSON encoding error: %v", err)
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", documentID)
 		output := fmt.Sprintf("Document structure analysis for %s:\n\n%s\n\nLink: %s", documentID, string(jsonBytes), link)
-		return mcp.NewToolResultText(output), nil
+		return textResult(output)
 	}
 }
 
@@ -672,36 +693,38 @@ func extractCellText(cell *docs.TableCell) string {
 
 // --- debug_table_structure ---
 
-func registerDebugTableStructure(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("debug_table_structure",
-		mcp.WithDescription("Essential debugging tool for understanding and troubleshooting table structures.\nShows exact table dimensions, cell positions, coordinates, and current content.\n\nUSE THIS WHEN:\n- Table population put data in wrong cells\n- You get \"table not found\" errors\n- Need to understand existing table structure\n- Planning to use populate_existing_table"),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("ID of the document containing the table.")),
-		mcp.WithNumber("table_index", mcp.Description("Which table to debug (0 = first table, 1 = second table, etc.). Defaults to 0.")),
-	)
-	s.AddTool(tool, handleDebugTableStructure(getClient))
+func registerDebugTableStructure(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "debug_table_structure",
+		Description: "Essential debugging tool for understanding and troubleshooting table structures.\nShows exact table dimensions, cell positions, coordinates, and current content.\n\nUSE THIS WHEN:\n- Table population put data in wrong cells\n- You get \"table not found\" errors\n- Need to understand existing table structure\n- Planning to use populate_existing_table",
+	}
+	mcp.AddTool(s, tool, handleDebugTableStructure(getClient))
 }
 
-func handleDebugTableStructure(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// debugTableStructureIn is the input schema for debug_table_structure.
+type debugTableStructureIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string `json:"document_id" jsonschema:"ID of the document containing the table."`
+	TableIndex      int    `json:"table_index,omitempty" jsonschema:"Which table to debug (0 = first table, 1 = second table, etc.). Defaults to 0."`
+}
+
+func handleDebugTableStructure(getClient httpClientFunc) mcp.ToolHandlerFor[debugTableStructureIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in debugTableStructureIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
-		}
-		tableIndex := request.GetInt("table_index", 0)
+		documentID := in.DocumentID
+		tableIndex := in.TableIndex
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		doc, err := docsSvc.Documents.Get(documentID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		// Find all tables in the document.
@@ -713,7 +736,7 @@ func handleDebugTableStructure(getClient httpClientFunc) mcpserver.ToolHandlerFu
 		}
 
 		if tableIndex >= len(tables) {
-			return mcp.NewToolResultText(fmt.Sprintf("Error: Table index %d not found. Document has %d table(s).", tableIndex, len(tables))), nil
+			return textResult(fmt.Sprintf("Error: Table index %d not found. Document has %d table(s).", tableIndex, len(tables)))
 		}
 
 		tableElem := tables[tableIndex]
@@ -748,11 +771,11 @@ func handleDebugTableStructure(getClient httpClientFunc) mcpserver.ToolHandlerFu
 				}
 
 				cellDebug := map[string]any{
-					"position":                fmt.Sprintf("(%d,%d)", rowIdx, colIdx),
-					"range":                   fmt.Sprintf("[%d-%d]", cell.StartIndex, cell.EndIndex),
-					"insertion_index":         insertionIndex,
-					"current_content":         fmt.Sprintf("%q", cellContent),
-					"content_elements_count":  contentElements,
+					"position":               fmt.Sprintf("(%d,%d)", rowIdx, colIdx),
+					"range":                  fmt.Sprintf("[%d-%d]", cell.StartIndex, cell.EndIndex),
+					"insertion_index":        insertionIndex,
+					"current_content":        fmt.Sprintf("%q", cellContent),
+					"content_elements_count": contentElements,
 				}
 				rowInfo = append(rowInfo, cellDebug)
 			}
@@ -762,12 +785,12 @@ func handleDebugTableStructure(getClient httpClientFunc) mcpserver.ToolHandlerFu
 
 		jsonBytes, err := json.MarshalIndent(debugInfo, "", "  ")
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("JSON encoding error: %v", err)), nil
+			return nil, nil, toolErr("JSON encoding error: %v", err)
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", documentID)
 		output := fmt.Sprintf("Table structure debug for table %d:\n\n%s\n\nLink: %s", tableIndex, string(jsonBytes), link)
-		return mcp.NewToolResultText(output), nil
+		return textResult(output)
 	}
 }
 
@@ -777,61 +800,75 @@ func handleDebugTableStructure(getClient httpClientFunc) mcpserver.ToolHandlerFu
 
 // --- modify_doc_text ---
 
-func registerModifyDocText(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("modify_doc_text",
-		mcp.WithDescription("Modifies text in a Google Doc - can insert/replace text and/or apply formatting in a single operation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("ID of the document to update.")),
-		mcp.WithNumber("start_index", mcp.Required(), mcp.Description("Start position for operation (0-based).")),
-		mcp.WithNumber("end_index", mcp.Description("End position for text replacement/formatting (if not provided with text, text is inserted).")),
-		mcp.WithString("text", mcp.Description("New text to insert or replace with (optional - can format existing text without changing it).")),
-		mcp.WithBoolean("bold", mcp.Description("Whether to make text bold (True/False/None to leave unchanged).")),
-		mcp.WithBoolean("italic", mcp.Description("Whether to make text italic.")),
-		mcp.WithBoolean("underline", mcp.Description("Whether to underline text.")),
-		mcp.WithNumber("font_size", mcp.Description("Font size in points.")),
-		mcp.WithString("font_family", mcp.Description("Font family name (e.g., 'Arial', 'Times New Roman').")),
-		mcp.WithString("text_color", mcp.Description("Foreground text color (#RRGGBB).")),
-		mcp.WithString("background_color", mcp.Description("Background/highlight color (#RRGGBB).")),
-	)
-	s.AddTool(tool, handleModifyDocText(getClient))
+func registerModifyDocText(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "modify_doc_text",
+		Description: "Modifies text in a Google Doc - can insert/replace text and/or apply formatting in a single operation.",
+	}
+	mcp.AddTool(s, tool, handleModifyDocText(getClient))
 }
 
-func handleModifyDocText(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
-		}
-		startIndex := request.GetInt("start_index", 0)
-		endIndex := request.GetInt("end_index", -1)
-		text := request.GetString("text", "")
+// modifyDocTextIn is the input schema for modify_doc_text.
+type modifyDocTextIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string `json:"document_id" jsonschema:"ID of the document to update."`
+	StartIndex      int    `json:"start_index" jsonschema:"Start position for operation (0-based)."`
+	EndIndex        int    `json:"end_index,omitempty" jsonschema:"End position for text replacement/formatting (if not provided with text, text is inserted)."`
+	Text            string `json:"text,omitempty" jsonschema:"New text to insert or replace with (optional - can format existing text without changing it)."`
+	Bold            *bool  `json:"bold,omitempty" jsonschema:"Whether to make text bold (True/False/None to leave unchanged)."`
+	Italic          *bool  `json:"italic,omitempty" jsonschema:"Whether to make text italic."`
+	Underline       *bool  `json:"underline,omitempty" jsonschema:"Whether to underline text."`
+	FontSize        int    `json:"font_size,omitempty" jsonschema:"Font size in points."`
+	FontFamily      string `json:"font_family,omitempty" jsonschema:"Font family name (e.g., 'Arial', 'Times New Roman')."`
+	TextColor       string `json:"text_color,omitempty" jsonschema:"Foreground text color (#RRGGBB)."`
+	BackgroundColor string `json:"background_color,omitempty" jsonschema:"Background/highlight color (#RRGGBB)."`
+}
 
-		args := request.GetArguments()
+func handleModifyDocText(getClient httpClientFunc) mcp.ToolHandlerFor[modifyDocTextIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in modifyDocTextIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		documentID := in.DocumentID
+		startIndex := in.StartIndex
+		endIndex := in.EndIndex
+		if endIndex == 0 {
+			endIndex = -1
+		}
+		text := in.Text
+
+		args := map[string]any{}
+		if in.Bold != nil {
+			args["bold"] = *in.Bold
+		}
+		if in.Italic != nil {
+			args["italic"] = *in.Italic
+		}
+		if in.Underline != nil {
+			args["underline"] = *in.Underline
+		}
 		_, hasBold := args["bold"]
 		_, hasItalic := args["italic"]
 		_, hasUnderline := args["underline"]
-		fontSize := request.GetInt("font_size", 0)
-		fontFamily := request.GetString("font_family", "")
-		textColor := request.GetString("text_color", "")
-		bgColor := request.GetString("background_color", "")
+		fontSize := in.FontSize
+		fontFamily := in.FontFamily
+		textColor := in.TextColor
+		bgColor := in.BackgroundColor
 
 		hasFormatting := hasBold || hasItalic || hasUnderline || fontSize > 0 || fontFamily != "" || textColor != "" || bgColor != ""
 
 		if text == "" && !hasFormatting {
-			return mcp.NewToolResultError("Must provide either 'text' to insert/replace, or formatting parameters (bold, italic, underline, font_size, font_family, text_color, background_color)."), nil
+			return nil, nil, toolErr("Must provide either 'text' to insert/replace, or formatting parameters (bold, italic, underline, font_size, font_family, text_color, background_color).")
 		}
 
 		if hasFormatting && endIndex < 0 {
-			return mcp.NewToolResultError("'end_index' is required when applying formatting."), nil
+			return nil, nil, toolErr("'end_index' is required when applying formatting.")
 		}
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		var requests []*docs.Request
@@ -961,7 +998,7 @@ func handleModifyDocText(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			Requests: requests,
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", documentID)
@@ -970,7 +1007,7 @@ func handleModifyDocText(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		if text != "" {
 			textInfo = fmt.Sprintf(" Text length: %d characters.", len(text))
 		}
-		return mcp.NewToolResultText(fmt.Sprintf("%s in document %s.%s Link: %s", operationSummary, documentID, textInfo, link)), nil
+		return textResult(fmt.Sprintf("%s in document %s.%s Link: %s", operationSummary, documentID, textInfo, link))
 	}
 }
 
@@ -1040,9 +1077,9 @@ func normalizeColor(hex string) *docs.RgbColor {
 		return nil
 	}
 	return &docs.RgbColor{
-		Red:   float64(r) / 255,
-		Green: float64(g) / 255,
-		Blue:  float64(b) / 255,
+		Red:             float64(r) / 255,
+		Green:           float64(g) / 255,
+		Blue:            float64(b) / 255,
 		ForceSendFields: []string{"Red", "Green", "Blue"},
 	}
 }
@@ -1067,41 +1104,37 @@ func hexToDec(s string) int {
 
 // --- find_and_replace_doc ---
 
-func registerFindAndReplaceDoc(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("find_and_replace_doc",
-		mcp.WithDescription("Finds and replaces text throughout a Google Doc."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("ID of the document to update.")),
-		mcp.WithString("find_text", mcp.Required(), mcp.Description("Text to search for.")),
-		mcp.WithString("replace_text", mcp.Required(), mcp.Description("Text to replace with.")),
-		mcp.WithBoolean("match_case", mcp.Description("Whether to match case exactly. Defaults to false.")),
-	)
-	s.AddTool(tool, handleFindAndReplaceDoc(getClient))
+func registerFindAndReplaceDoc(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "find_and_replace_doc",
+		Description: "Finds and replaces text throughout a Google Doc.",
+	}
+	mcp.AddTool(s, tool, handleFindAndReplaceDoc(getClient))
 }
 
-func handleFindAndReplaceDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// findAndReplaceDocIn is the input schema for find_and_replace_doc.
+type findAndReplaceDocIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string `json:"document_id" jsonschema:"ID of the document to update."`
+	FindText        string `json:"find_text" jsonschema:"Text to search for."`
+	ReplaceText     string `json:"replace_text" jsonschema:"Text to replace with."`
+	MatchCase       bool   `json:"match_case,omitempty" jsonschema:"Whether to match case exactly. Defaults to false."`
+}
+
+func handleFindAndReplaceDoc(getClient httpClientFunc) mcp.ToolHandlerFor[findAndReplaceDocIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in findAndReplaceDocIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
-		}
-		findText, err := request.RequireString("find_text")
-		if err != nil {
-			return mcp.NewToolResultError("find_text is required"), nil
-		}
-		replaceText, err := request.RequireString("replace_text")
-		if err != nil {
-			return mcp.NewToolResultError("replace_text is required"), nil
-		}
-		matchCase := getBool(request, "match_case", false)
+		documentID := in.DocumentID
+		findText := in.FindText
+		replaceText := in.ReplaceText
+		matchCase := in.MatchCase
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resp, err := docsSvc.Documents.BatchUpdate(documentID, &docs.BatchUpdateDocumentRequest{
@@ -1109,8 +1142,8 @@ func handleFindAndReplaceDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 				{
 					ReplaceAllText: &docs.ReplaceAllTextRequest{
 						ContainsText: &docs.SubstringMatchCriteria{
-							Text:      findText,
-							MatchCase: matchCase,
+							Text:            findText,
+							MatchCase:       matchCase,
 							ForceSendFields: []string{"MatchCase"},
 						},
 						ReplaceText: replaceText,
@@ -1119,7 +1152,7 @@ func handleFindAndReplaceDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 			},
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		replacements := int64(0)
@@ -1128,43 +1161,42 @@ func handleFindAndReplaceDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", documentID)
-		return mcp.NewToolResultText(fmt.Sprintf("Replaced %d occurrence(s) of '%s' with '%s' in document %s. Link: %s",
-			replacements, findText, replaceText, documentID, link)), nil
+		return textResult(fmt.Sprintf("Replaced %d occurrence(s) of '%s' with '%s' in document %s. Link: %s",
+			replacements, findText, replaceText, documentID, link))
 	}
 }
 
 // --- insert_doc_elements ---
 
-func registerInsertDocElements(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("insert_doc_elements",
-		mcp.WithDescription("Inserts structural elements like tables, lists, or page breaks into a Google Doc."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("ID of the document to update.")),
-		mcp.WithString("element_type", mcp.Required(), mcp.Description("Type of element to insert ('table', 'list', 'page_break').")),
-		mcp.WithNumber("index", mcp.Required(), mcp.Description("Position to insert element (0-based).")),
-		mcp.WithNumber("rows", mcp.Description("Number of rows for table (required for table).")),
-		mcp.WithNumber("columns", mcp.Description("Number of columns for table (required for table).")),
-		mcp.WithString("list_type", mcp.Description("Type of list ('UNORDERED', 'ORDERED') (required for list).")),
-		mcp.WithString("text", mcp.Description("Initial text content for list items.")),
-	)
-	s.AddTool(tool, handleInsertDocElements(getClient))
+func registerInsertDocElements(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "insert_doc_elements",
+		Description: "Inserts structural elements like tables, lists, or page breaks into a Google Doc.",
+	}
+	mcp.AddTool(s, tool, handleInsertDocElements(getClient))
 }
 
-func handleInsertDocElements(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// insertDocElementsIn is the input schema for insert_doc_elements.
+type insertDocElementsIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string `json:"document_id" jsonschema:"ID of the document to update."`
+	ElementType     string `json:"element_type" jsonschema:"Type of element to insert ('table', 'list', 'page_break')."`
+	Index           int    `json:"index" jsonschema:"Position to insert element (0-based)."`
+	Rows            int    `json:"rows,omitempty" jsonschema:"Number of rows for table (required for table)."`
+	Columns         int    `json:"columns,omitempty" jsonschema:"Number of columns for table (required for table)."`
+	ListType        string `json:"list_type,omitempty" jsonschema:"Type of list ('UNORDERED', 'ORDERED') (required for list)."`
+	Text            string `json:"text,omitempty" jsonschema:"Initial text content for list items."`
+}
+
+func handleInsertDocElements(getClient httpClientFunc) mcp.ToolHandlerFor[insertDocElementsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in insertDocElementsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
-		}
-		elementType, err := request.RequireString("element_type")
-		if err != nil {
-			return mcp.NewToolResultError("element_type is required"), nil
-		}
-		index := int64(request.GetInt("index", 0))
+		documentID := in.DocumentID
+		elementType := in.ElementType
+		index := int64(in.Index)
 
 		// Avoid first section break
 		if index == 0 {
@@ -1173,7 +1205,7 @@ func handleInsertDocElements(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		var requests []*docs.Request
@@ -1181,10 +1213,10 @@ func handleInsertDocElements(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 
 		switch elementType {
 		case "table":
-			rows := request.GetInt("rows", 0)
-			columns := request.GetInt("columns", 0)
+			rows := in.Rows
+			columns := in.Columns
 			if rows == 0 || columns == 0 {
-				return mcp.NewToolResultError("'rows' and 'columns' parameters are required for table insertion."), nil
+				return nil, nil, toolErr("'rows' and 'columns' parameters are required for table insertion.")
 			}
 			requests = append(requests, &docs.Request{
 				InsertTable: &docs.InsertTableRequest{
@@ -1196,11 +1228,14 @@ func handleInsertDocElements(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 			description = fmt.Sprintf("table (%dx%d)", rows, columns)
 
 		case "list":
-			listType := request.GetString("list_type", "")
+			listType := in.ListType
 			if listType == "" {
-				return mcp.NewToolResultError("'list_type' parameter is required for list insertion ('UNORDERED' or 'ORDERED')."), nil
+				return nil, nil, toolErr("'list_type' parameter is required for list insertion ('UNORDERED' or 'ORDERED').")
 			}
-			text := request.GetString("text", "List item")
+			text := in.Text
+			if text == "" {
+				text = "List item"
+			}
 			bulletPreset := "BULLET_DISC_CIRCLE_SQUARE"
 			if listType == "ORDERED" {
 				bulletPreset = "NUMBERED_DECIMAL_ALPHA_ROMAN"
@@ -1233,53 +1268,52 @@ func handleInsertDocElements(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 			description = "page break"
 
 		default:
-			return mcp.NewToolResultError(fmt.Sprintf("Unsupported element type '%s'. Supported types: 'table', 'list', 'page_break'.", elementType)), nil
+			return nil, nil, toolErr("Unsupported element type '%s'. Supported types: 'table', 'list', 'page_break'.", elementType)
 		}
 
 		_, err = docsSvc.Documents.BatchUpdate(documentID, &docs.BatchUpdateDocumentRequest{
 			Requests: requests,
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", documentID)
-		return mcp.NewToolResultText(fmt.Sprintf("Inserted %s at index %d in document %s. Link: %s", description, index, documentID, link)), nil
+		return textResult(fmt.Sprintf("Inserted %s at index %d in document %s. Link: %s", description, index, documentID, link))
 	}
 }
 
 // --- insert_doc_image ---
 
-func registerInsertDocImage(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("insert_doc_image",
-		mcp.WithDescription("Inserts an image into a Google Doc from Drive or a URL."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("ID of the document to update.")),
-		mcp.WithString("image_source", mcp.Required(), mcp.Description("Drive file ID or public image URL.")),
-		mcp.WithNumber("index", mcp.Required(), mcp.Description("Position to insert image (0-based).")),
-		mcp.WithNumber("width", mcp.Description("Image width in points (optional).")),
-		mcp.WithNumber("height", mcp.Description("Image height in points (optional).")),
-	)
-	s.AddTool(tool, handleInsertDocImage(getClient))
+func registerInsertDocImage(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "insert_doc_image",
+		Description: "Inserts an image into a Google Doc from Drive or a URL.",
+	}
+	mcp.AddTool(s, tool, handleInsertDocImage(getClient))
 }
 
-func handleInsertDocImage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// insertDocImageIn is the input schema for insert_doc_image.
+type insertDocImageIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string `json:"document_id" jsonschema:"ID of the document to update."`
+	ImageSource     string `json:"image_source" jsonschema:"Drive file ID or public image URL."`
+	Index           int    `json:"index" jsonschema:"Position to insert image (0-based)."`
+	Width           int    `json:"width,omitempty" jsonschema:"Image width in points (optional)."`
+	Height          int    `json:"height,omitempty" jsonschema:"Image height in points (optional)."`
+}
+
+func handleInsertDocImage(getClient httpClientFunc) mcp.ToolHandlerFor[insertDocImageIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in insertDocImageIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
-		}
-		imageSource, err := request.RequireString("image_source")
-		if err != nil {
-			return mcp.NewToolResultError("image_source is required"), nil
-		}
-		index := int64(request.GetInt("index", 0))
-		width := request.GetInt("width", 0)
-		height := request.GetInt("height", 0)
+		documentID := in.DocumentID
+		imageSource := in.ImageSource
+		index := int64(in.Index)
+		width := in.Width
+		height := in.Height
 
 		if index == 0 {
 			index = 1
@@ -1295,17 +1329,17 @@ func handleInsertDocImage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			// Verify Drive file exists and is an image
 			driveSvc, err := newDriveService(ctx, getClient, email)
 			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
+				return nil, nil, err
 			}
 			fileMeta, err := driveSvc.Files.Get(imageSource).
 				Fields("id, name, mimeType").
 				SupportsAllDrives(true).
 				Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Could not access Drive file %s: %v", imageSource, err)), nil
+				return nil, nil, toolErr("Could not access Drive file %s: %v", imageSource, err)
 			}
 			if !strings.HasPrefix(fileMeta.MimeType, "image/") {
-				return mcp.NewToolResultError(fmt.Sprintf("File %s is not an image (MIME type: %s).", imageSource, fileMeta.MimeType)), nil
+				return nil, nil, toolErr("File %s is not an image (MIME type: %s).", imageSource, fileMeta.MimeType)
 			}
 			imageURI = fmt.Sprintf("https://drive.google.com/uc?id=%s", imageSource)
 			sourceDescription = fmt.Sprintf("Drive file %s", fileMeta.Name)
@@ -1316,7 +1350,7 @@ func handleInsertDocImage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		insertReq := &docs.InsertInlineImageRequest{
@@ -1339,7 +1373,7 @@ func handleInsertDocImage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			Requests: []*docs.Request{{InsertInlineImage: insertReq}},
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		sizeInfo := ""
@@ -1355,62 +1389,61 @@ func handleInsertDocImage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", documentID)
-		return mcp.NewToolResultText(fmt.Sprintf("Inserted %s%s at index %d in document %s. Link: %s",
-			sourceDescription, sizeInfo, index, documentID, link)), nil
+		return textResult(fmt.Sprintf("Inserted %s%s at index %d in document %s. Link: %s",
+			sourceDescription, sizeInfo, index, documentID, link))
 	}
 }
 
 // --- update_doc_headers_footers ---
 
-func registerUpdateDocHeadersFooters(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("update_doc_headers_footers",
-		mcp.WithDescription("Updates headers or footers in a Google Doc."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("ID of the document to update.")),
-		mcp.WithString("section_type", mcp.Required(), mcp.Description("Type of section to update ('header' or 'footer').")),
-		mcp.WithString("content", mcp.Required(), mcp.Description("Text content for the header/footer.")),
-		mcp.WithString("header_footer_type", mcp.Description("Type of header/footer ('DEFAULT', 'FIRST_PAGE_ONLY', 'EVEN_PAGE'). Defaults to 'DEFAULT'.")),
-	)
-	s.AddTool(tool, handleUpdateDocHeadersFooters(getClient))
+func registerUpdateDocHeadersFooters(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "update_doc_headers_footers",
+		Description: "Updates headers or footers in a Google Doc.",
+	}
+	mcp.AddTool(s, tool, handleUpdateDocHeadersFooters(getClient))
 }
 
-func handleUpdateDocHeadersFooters(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// updateDocHeadersFootersIn is the input schema for update_doc_headers_footers.
+type updateDocHeadersFootersIn struct {
+	UserGoogleEmail  string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID       string `json:"document_id" jsonschema:"ID of the document to update."`
+	SectionType      string `json:"section_type" jsonschema:"Type of section to update ('header' or 'footer')."`
+	Content          string `json:"content" jsonschema:"Text content for the header/footer."`
+	HeaderFooterType string `json:"header_footer_type,omitempty" jsonschema:"Type of header/footer ('DEFAULT', 'FIRST_PAGE_ONLY', 'EVEN_PAGE'). Defaults to 'DEFAULT'."`
+}
+
+func handleUpdateDocHeadersFooters(getClient httpClientFunc) mcp.ToolHandlerFor[updateDocHeadersFootersIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateDocHeadersFootersIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
+		documentID := in.DocumentID
+		sectionType := in.SectionType
+		content := in.Content
+		headerFooterType := in.HeaderFooterType
+		if headerFooterType == "" {
+			headerFooterType = "DEFAULT"
 		}
-		sectionType, err := request.RequireString("section_type")
-		if err != nil {
-			return mcp.NewToolResultError("section_type is required"), nil
-		}
-		content, err := request.RequireString("content")
-		if err != nil {
-			return mcp.NewToolResultError("content is required"), nil
-		}
-		headerFooterType := request.GetString("header_footer_type", "DEFAULT")
 
 		if sectionType != "header" && sectionType != "footer" {
-			return mcp.NewToolResultError("section_type must be 'header' or 'footer'"), nil
+			return nil, nil, toolErr("section_type must be 'header' or 'footer'")
 		}
 		validTypes := map[string]bool{"DEFAULT": true, "FIRST_PAGE_ONLY": true, "EVEN_PAGE": true}
 		if !validTypes[headerFooterType] {
-			return mcp.NewToolResultError("header_footer_type must be 'DEFAULT', 'FIRST_PAGE_ONLY', or 'EVEN_PAGE'"), nil
+			return nil, nil, toolErr("header_footer_type must be 'DEFAULT', 'FIRST_PAGE_ONLY', or 'EVEN_PAGE'")
 		}
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Get document to find header/footer sections
 		doc, err := docsSvc.Documents.Get(documentID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		// Find the target section
@@ -1418,7 +1451,7 @@ func handleUpdateDocHeadersFooters(getClient httpClientFunc) mcpserver.ToolHandl
 
 		if sectionType == "header" {
 			if len(doc.Headers) == 0 {
-				return mcp.NewToolResultError(fmt.Sprintf("No %s found in document. Please create a %s first in Google Docs.", sectionType, sectionType)), nil
+				return nil, nil, toolErr("No %s found in document. Please create a %s first in Google Docs.", sectionType, sectionType)
 			}
 			for _, header := range doc.Headers {
 				targetContent = header.Content
@@ -1426,7 +1459,7 @@ func handleUpdateDocHeadersFooters(getClient httpClientFunc) mcpserver.ToolHandl
 			}
 		} else {
 			if len(doc.Footers) == 0 {
-				return mcp.NewToolResultError(fmt.Sprintf("No %s found in document. Please create a %s first in Google Docs.", sectionType, sectionType)), nil
+				return nil, nil, toolErr("No %s found in document. Please create a %s first in Google Docs.", sectionType, sectionType)
 			}
 			for _, footer := range doc.Footers {
 				targetContent = footer.Content
@@ -1435,7 +1468,7 @@ func handleUpdateDocHeadersFooters(getClient httpClientFunc) mcpserver.ToolHandl
 		}
 
 		if len(targetContent) == 0 {
-			return mcp.NewToolResultError(fmt.Sprintf("Could not find content structure in %s to update", sectionType)), nil
+			return nil, nil, toolErr("Could not find content structure in %s to update", sectionType)
 		}
 
 		// Find first paragraph element
@@ -1450,7 +1483,7 @@ func handleUpdateDocHeadersFooters(getClient httpClientFunc) mcpserver.ToolHandl
 			}
 		}
 		if !found {
-			return mcp.NewToolResultError(fmt.Sprintf("Could not find content structure in %s to update", sectionType)), nil
+			return nil, nil, toolErr("Could not find content structure in %s to update", sectionType)
 		}
 
 		var requests []*docs.Request
@@ -1477,72 +1510,61 @@ func handleUpdateDocHeadersFooters(getClient httpClientFunc) mcpserver.ToolHandl
 			Requests: requests,
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", documentID)
-		return mcp.NewToolResultText(fmt.Sprintf("Updated %s content in document %s. Link: %s", sectionType, documentID, link)), nil
+		return textResult(fmt.Sprintf("Updated %s content in document %s. Link: %s", sectionType, documentID, link))
 	}
 }
 
 // --- batch_update_doc ---
 
-func registerBatchUpdateDoc(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("batch_update_doc",
-		mcp.WithDescription("Executes multiple document operations in a single atomic batch update.\n\nSupported operations:\n- insert_text: {type, index, text}\n- delete_text: {type, start_index, end_index}\n- replace_text: {type, start_index, end_index, text}\n- format_text: {type, start_index, end_index, bold, italic, underline, font_size, font_family, text_color, background_color}\n- insert_table: {type, index, rows, columns}\n- insert_page_break: {type, index}\n- find_replace: {type, find_text, replace_text, match_case}"),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("ID of the document to update.")),
-		mcp.WithArray("operations", mcp.Required(), mcp.Description("List of operation dictionaries."), mcp.Items(map[string]any{"type": "object"})),
-	)
-	s.AddTool(tool, handleBatchUpdateDoc(getClient))
+func registerBatchUpdateDoc(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "batch_update_doc",
+		Description: "Executes multiple document operations in a single atomic batch update.\n\nSupported operations:\n- insert_text: {type, index, text}\n- delete_text: {type, start_index, end_index}\n- replace_text: {type, start_index, end_index, text}\n- format_text: {type, start_index, end_index, bold, italic, underline, font_size, font_family, text_color, background_color}\n- insert_table: {type, index, rows, columns}\n- insert_page_break: {type, index}\n- find_replace: {type, find_text, replace_text, match_case}",
+	}
+	mcp.AddTool(s, tool, handleBatchUpdateDoc(getClient))
 }
 
-func handleBatchUpdateDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
-		}
+// batchUpdateDocIn is the input schema for batch_update_doc.
+type batchUpdateDocIn struct {
+	UserGoogleEmail string           `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string           `json:"document_id" jsonschema:"ID of the document to update."`
+	Operations      []map[string]any `json:"operations" jsonschema:"List of operation dictionaries."`
+}
 
-		args := request.GetArguments()
-		opsRaw, ok := args["operations"]
-		if !ok {
-			return mcp.NewToolResultError("operations is required"), nil
+func handleBatchUpdateDoc(getClient httpClientFunc) mcp.ToolHandlerFor[batchUpdateDocIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in batchUpdateDocIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		opsSlice, ok := opsRaw.([]any)
-		if !ok {
-			return mcp.NewToolResultError("operations must be an array"), nil
-		}
+		documentID := in.DocumentID
+
+		opsSlice := in.Operations
 		if len(opsSlice) == 0 {
-			return mcp.NewToolResultError("No operations provided. Please provide at least one operation."), nil
+			return nil, nil, toolErr("No operations provided. Please provide at least one operation.")
 		}
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		var requests []*docs.Request
 		var descriptions []string
 
-		for i, opRaw := range opsSlice {
-			op, ok := opRaw.(map[string]any)
-			if !ok {
-				return mcp.NewToolResultError(fmt.Sprintf("Operation %d: must be an object", i+1)), nil
-			}
-
+		for i, op := range opsSlice {
 			opType, _ := op["type"].(string)
 			if opType == "" {
-				return mcp.NewToolResultError(fmt.Sprintf("Operation %d: missing 'type' field", i+1)), nil
+				return nil, nil, toolErr("Operation %d: missing 'type' field", i+1)
 			}
 
 			reqs, desc, err := buildBatchOperationRequest(op, opType, i+1)
 			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
+				return nil, nil, err
 			}
 			requests = append(requests, reqs...)
 			descriptions = append(descriptions, desc)
@@ -1552,7 +1574,7 @@ func handleBatchUpdateDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			Requests: requests,
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		repliesCount := 0
@@ -1571,8 +1593,8 @@ func handleBatchUpdateDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", documentID)
-		return mcp.NewToolResultText(fmt.Sprintf("Successfully executed %d operations (%s) on document %s. API replies: %d. Link: %s",
-			len(opsSlice), summary, documentID, repliesCount, link)), nil
+		return textResult(fmt.Sprintf("Successfully executed %d operations (%s) on document %s. API replies: %d. Link: %s",
+			len(opsSlice), summary, documentID, repliesCount, link))
 	}
 }
 
@@ -1768,50 +1790,49 @@ func buildBatchOperationRequest(op map[string]any, opType string, opNum int) ([]
 
 // --- create_table_with_data ---
 
-func registerCreateTableWithData(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_table_with_data",
-		mcp.WithDescription("Creates a table and populates it with data in one reliable operation.\n\nCRITICAL: YOU MUST CALL inspect_doc_structure FIRST TO GET THE INDEX!\n\nMANDATORY WORKFLOW:\nStep 1: ALWAYS call inspect_doc_structure first\nStep 2: Use the 'total_length' value as your index\nStep 3: Format data as 2D list: [[\"col1\", \"col2\"], [\"row1col1\", \"row1col2\"]]\nStep 4: Call this function with the correct index and data\n\nDATA FORMAT: Must be 2D list of strings. All rows MUST have same number of columns."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("ID of the document to update.")),
-		mcp.WithArray("table_data", mcp.Required(), mcp.Description("2D list of strings - EXACT format: [[\"col1\", \"col2\"], [\"row1col1\", \"row1col2\"]]"), mcp.Items(map[string]any{"type": "array", "items": map[string]any{"type": "string"}})),
-		mcp.WithNumber("index", mcp.Required(), mcp.Description("Document position (MANDATORY: get from inspect_doc_structure 'total_length').")),
-		mcp.WithBoolean("bold_headers", mcp.Description("Whether to make first row bold (default: true).")),
-	)
-	s.AddTool(tool, handleCreateTableWithData(getClient))
+func registerCreateTableWithData(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "create_table_with_data",
+		Description: "Creates a table and populates it with data in one reliable operation.\n\nCRITICAL: YOU MUST CALL inspect_doc_structure FIRST TO GET THE INDEX!\n\nMANDATORY WORKFLOW:\nStep 1: ALWAYS call inspect_doc_structure first\nStep 2: Use the 'total_length' value as your index\nStep 3: Format data as 2D list: [[\"col1\", \"col2\"], [\"row1col1\", \"row1col2\"]]\nStep 4: Call this function with the correct index and data\n\nDATA FORMAT: Must be 2D list of strings. All rows MUST have same number of columns.",
+	}
+	mcp.AddTool(s, tool, handleCreateTableWithData(getClient))
 }
 
-func handleCreateTableWithData(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// createTableWithDataIn is the input schema for create_table_with_data.
+type createTableWithDataIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string `json:"document_id" jsonschema:"ID of the document to update."`
+	TableData       []any  "json:\"table_data\" jsonschema:\"2D list of strings - EXACT format: [[\\\"col1\\\", \\\"col2\\\"], [\\\"row1col1\\\", \\\"row1col2\\\"]]\""
+	Index           int    `json:"index" jsonschema:"Document position (MANDATORY: get from inspect_doc_structure 'total_length')."`
+	BoldHeaders     *bool  `json:"bold_headers,omitempty" jsonschema:"Whether to make first row bold (default: true)."`
+}
+
+func handleCreateTableWithData(getClient httpClientFunc) mcp.ToolHandlerFor[createTableWithDataIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createTableWithDataIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
+		documentID := in.DocumentID
+		index := int64(in.Index)
+		boldHeaders := true
+		if in.BoldHeaders != nil {
+			boldHeaders = *in.BoldHeaders
 		}
-		index := int64(request.GetInt("index", 0))
-		boldHeaders := getBool(request, "bold_headers", true)
 
 		// Parse table_data from arguments
-		args := request.GetArguments()
-		tableDataRaw, ok := args["table_data"]
-		if !ok {
-			return mcp.NewToolResultError("table_data is required"), nil
-		}
-
-		tableData, err := parseTableData(tableDataRaw)
+		tableData, err := parseTableData(in.TableData)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("ERROR: %v", err)), nil
+			return nil, nil, toolErr("ERROR: %v", err)
 		}
 
 		if len(tableData) == 0 {
-			return mcp.NewToolResultError("ERROR: table_data must not be empty"), nil
+			return nil, nil, toolErr("ERROR: table_data must not be empty")
 		}
 		cols := len(tableData[0])
 		for i, row := range tableData {
 			if len(row) != cols {
-				return mcp.NewToolResultError(fmt.Sprintf("ERROR: Row %d has %d columns, expected %d. All rows must have the same number of columns.", i, len(row), cols)), nil
+				return nil, nil, toolErr("ERROR: Row %d has %d columns, expected %d. All rows must have the same number of columns.", i, len(row), cols)
 			}
 		}
 
@@ -1819,7 +1840,7 @@ func handleCreateTableWithData(getClient httpClientFunc) mcpserver.ToolHandlerFu
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Step 1: Create empty table
@@ -1846,10 +1867,10 @@ func handleCreateTableWithData(getClient httpClientFunc) mcpserver.ToolHandlerFu
 					}},
 				}).Do()
 				if err != nil {
-					return mcp.NewToolResultError(fmt.Sprintf("ERROR: Table creation failed: %v", err)), nil
+					return nil, nil, toolErr("ERROR: Table creation failed: %v", err)
 				}
 			} else {
-				return mcp.NewToolResultError(fmt.Sprintf("ERROR: Table creation failed: %v", err)), nil
+				return nil, nil, toolErr("ERROR: Table creation failed: %v", err)
 			}
 		}
 
@@ -1924,8 +1945,8 @@ func handleCreateTableWithData(getClient httpClientFunc) mcpserver.ToolHandlerFu
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", documentID)
-		return mcp.NewToolResultText(fmt.Sprintf("SUCCESS: Successfully created %dx%d table and populated %d cells. Table: %dx%d, Index: %d. Link: %s",
-			rows, cols, populationCount, rows, cols, index, link)), nil
+		return textResult(fmt.Sprintf("SUCCESS: Successfully created %dx%d table and populated %d cells. Table: %dx%d, Index: %d. Link: %s",
+			rows, cols, populationCount, rows, cols, index, link))
 	}
 }
 
@@ -1958,54 +1979,55 @@ func parseTableData(raw any) ([][]string, error) {
 
 // --- update_paragraph_style ---
 
-func registerUpdateParagraphStyle(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("update_paragraph_style",
-		mcp.WithDescription("Apply paragraph-level formatting and/or heading styles to a range in a Google Doc.\n\nCan apply named heading styles (H1-H6) for semantic document structure,\nand/or customize paragraph properties like alignment, spacing, and indentation.\nBoth can be applied in a single operation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("Document ID to modify.")),
-		mcp.WithNumber("start_index", mcp.Required(), mcp.Description("Start position (1-based).")),
-		mcp.WithNumber("end_index", mcp.Required(), mcp.Description("End position (exclusive) - should cover the entire paragraph.")),
-		mcp.WithNumber("heading_level", mcp.Description("Heading level 0-6 (0 = NORMAL_TEXT, 1 = H1, 2 = H2, etc.).")),
-		mcp.WithString("alignment", mcp.Description("Text alignment - 'START' (left), 'CENTER', 'END' (right), or 'JUSTIFIED'.")),
-		mcp.WithNumber("line_spacing", mcp.Description("Line spacing multiplier (1.0 = single, 1.5 = 1.5x, 2.0 = double).")),
-		mcp.WithNumber("indent_first_line", mcp.Description("First line indent in points (e.g., 36 for 0.5 inch).")),
-		mcp.WithNumber("indent_start", mcp.Description("Left/start indent in points.")),
-		mcp.WithNumber("indent_end", mcp.Description("Right/end indent in points.")),
-		mcp.WithNumber("space_above", mcp.Description("Space above paragraph in points (e.g., 12 for one line).")),
-		mcp.WithNumber("space_below", mcp.Description("Space below paragraph in points.")),
-	)
-	s.AddTool(tool, handleUpdateParagraphStyle(getClient))
+func registerUpdateParagraphStyle(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "update_paragraph_style",
+		Description: "Apply paragraph-level formatting and/or heading styles to a range in a Google Doc.\n\nCan apply named heading styles (H1-H6) for semantic document structure,\nand/or customize paragraph properties like alignment, spacing, and indentation.\nBoth can be applied in a single operation.",
+	}
+	mcp.AddTool(s, tool, handleUpdateParagraphStyle(getClient))
 }
 
-func handleUpdateParagraphStyle(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// updateParagraphStyleIn is the input schema for update_paragraph_style.
+type updateParagraphStyleIn struct {
+	UserGoogleEmail string   `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string   `json:"document_id" jsonschema:"Document ID to modify."`
+	StartIndex      int      `json:"start_index" jsonschema:"Start position (1-based)."`
+	EndIndex        int      `json:"end_index" jsonschema:"End position (exclusive) - should cover the entire paragraph."`
+	HeadingLevel    *float64 `json:"heading_level,omitempty" jsonschema:"Heading level 0-6 (0 = NORMAL_TEXT, 1 = H1, 2 = H2, etc.)."`
+	Alignment       *string  `json:"alignment,omitempty" jsonschema:"Text alignment - 'START' (left), 'CENTER', 'END' (right), or 'JUSTIFIED'."`
+	LineSpacing     *float64 `json:"line_spacing,omitempty" jsonschema:"Line spacing multiplier (1.0 = single, 1.5 = 1.5x, 2.0 = double)."`
+	IndentFirstLine *float64 `json:"indent_first_line,omitempty" jsonschema:"First line indent in points (e.g., 36 for 0.5 inch)."`
+	IndentStart     *float64 `json:"indent_start,omitempty" jsonschema:"Left/start indent in points."`
+	IndentEnd       *float64 `json:"indent_end,omitempty" jsonschema:"Right/end indent in points."`
+	SpaceAbove      *float64 `json:"space_above,omitempty" jsonschema:"Space above paragraph in points (e.g., 12 for one line)."`
+	SpaceBelow      *float64 `json:"space_below,omitempty" jsonschema:"Space below paragraph in points."`
+}
+
+func handleUpdateParagraphStyle(getClient httpClientFunc) mcp.ToolHandlerFor[updateParagraphStyleIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateParagraphStyleIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
-		}
-		startIndex := int64(request.GetInt("start_index", 0))
-		endIndex := int64(request.GetInt("end_index", 0))
+		documentID := in.DocumentID
+		startIndex := int64(in.StartIndex)
+		endIndex := int64(in.EndIndex)
 
 		if startIndex < 1 {
-			return mcp.NewToolResultError("start_index must be >= 1"), nil
+			return nil, nil, toolErr("start_index must be >= 1")
 		}
 		if endIndex <= startIndex {
-			return mcp.NewToolResultError("end_index must be greater than start_index"), nil
+			return nil, nil, toolErr("end_index must be greater than start_index")
 		}
 
-		args := request.GetArguments()
 		paraStyle := &docs.ParagraphStyle{}
 		var fields []string
 
 		// Heading level
-		if hlRaw, ok := args["heading_level"]; ok {
-			hl := int(hlRaw.(float64))
+		if in.HeadingLevel != nil {
+			hl := int(*in.HeadingLevel)
 			if hl < 0 || hl > 6 {
-				return mcp.NewToolResultError("heading_level must be between 0 (normal text) and 6"), nil
+				return nil, nil, toolErr("heading_level must be between 0 (normal text) and 6")
 			}
 			if hl == 0 {
 				paraStyle.NamedStyleType = "NORMAL_TEXT"
@@ -2016,57 +2038,57 @@ func handleUpdateParagraphStyle(getClient httpClientFunc) mcpserver.ToolHandlerF
 		}
 
 		// Alignment
-		if alignRaw, ok := args["alignment"]; ok {
-			align := strings.ToUpper(alignRaw.(string))
+		if in.Alignment != nil {
+			align := strings.ToUpper(*in.Alignment)
 			validAligns := map[string]bool{"START": true, "CENTER": true, "END": true, "JUSTIFIED": true}
 			if !validAligns[align] {
-				return mcp.NewToolResultError(fmt.Sprintf("Invalid alignment '%s'. Must be one of: START, CENTER, END, JUSTIFIED", align)), nil
+				return nil, nil, toolErr("Invalid alignment '%s'. Must be one of: START, CENTER, END, JUSTIFIED", align)
 			}
 			paraStyle.Alignment = align
 			fields = append(fields, "alignment")
 		}
 
 		// Line spacing
-		if lsRaw, ok := args["line_spacing"]; ok {
-			ls := lsRaw.(float64)
+		if in.LineSpacing != nil {
+			ls := *in.LineSpacing
 			if ls <= 0 {
-				return mcp.NewToolResultError("line_spacing must be positive"), nil
+				return nil, nil, toolErr("line_spacing must be positive")
 			}
 			paraStyle.LineSpacing = ls * 100 // Convert to percentage
 			fields = append(fields, "lineSpacing")
 		}
 
 		// Indentation
-		if v, ok := args["indent_first_line"]; ok {
-			paraStyle.IndentFirstLine = &docs.Dimension{Magnitude: v.(float64), Unit: "PT"}
+		if in.IndentFirstLine != nil {
+			paraStyle.IndentFirstLine = &docs.Dimension{Magnitude: *in.IndentFirstLine, Unit: "PT"}
 			fields = append(fields, "indentFirstLine")
 		}
-		if v, ok := args["indent_start"]; ok {
-			paraStyle.IndentStart = &docs.Dimension{Magnitude: v.(float64), Unit: "PT"}
+		if in.IndentStart != nil {
+			paraStyle.IndentStart = &docs.Dimension{Magnitude: *in.IndentStart, Unit: "PT"}
 			fields = append(fields, "indentStart")
 		}
-		if v, ok := args["indent_end"]; ok {
-			paraStyle.IndentEnd = &docs.Dimension{Magnitude: v.(float64), Unit: "PT"}
+		if in.IndentEnd != nil {
+			paraStyle.IndentEnd = &docs.Dimension{Magnitude: *in.IndentEnd, Unit: "PT"}
 			fields = append(fields, "indentEnd")
 		}
 
 		// Spacing
-		if v, ok := args["space_above"]; ok {
-			paraStyle.SpaceAbove = &docs.Dimension{Magnitude: v.(float64), Unit: "PT"}
+		if in.SpaceAbove != nil {
+			paraStyle.SpaceAbove = &docs.Dimension{Magnitude: *in.SpaceAbove, Unit: "PT"}
 			fields = append(fields, "spaceAbove")
 		}
-		if v, ok := args["space_below"]; ok {
-			paraStyle.SpaceBelow = &docs.Dimension{Magnitude: v.(float64), Unit: "PT"}
+		if in.SpaceBelow != nil {
+			paraStyle.SpaceBelow = &docs.Dimension{Magnitude: *in.SpaceBelow, Unit: "PT"}
 			fields = append(fields, "spaceBelow")
 		}
 
 		if len(fields) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No paragraph style changes specified for document %s", documentID)), nil
+			return textResult(fmt.Sprintf("No paragraph style changes specified for document %s", documentID))
 		}
 
 		docsSvc, err := newDocsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		_, err = docsSvc.Documents.BatchUpdate(documentID, &docs.BatchUpdateDocumentRequest{
@@ -2082,7 +2104,7 @@ func handleUpdateParagraphStyle(getClient httpClientFunc) mcpserver.ToolHandlerF
 			}},
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Docs API error: %v", err)), nil
+			return nil, nil, toolErr("Docs API error: %v", err)
 		}
 
 		// Build summary
@@ -2101,8 +2123,8 @@ func handleUpdateParagraphStyle(getClient httpClientFunc) mcpserver.ToolHandlerF
 		}
 
 		link := fmt.Sprintf("https://docs.google.com/document/d/%s/edit", documentID)
-		return mcp.NewToolResultText(fmt.Sprintf("Applied paragraph style (%s) to range %d-%d in document %s. Link: %s",
-			strings.Join(summaryParts, ", "), startIndex, endIndex, documentID, link)), nil
+		return textResult(fmt.Sprintf("Applied paragraph style (%s) to range %d-%d in document %s. Link: %s",
+			strings.Join(summaryParts, ", "), startIndex, endIndex, documentID, link))
 	}
 }
 
@@ -2112,33 +2134,35 @@ func handleUpdateParagraphStyle(getClient httpClientFunc) mcpserver.ToolHandlerF
 
 // --- export_doc_to_pdf ---
 
-func registerExportDocToPDF(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("export_doc_to_pdf",
-		mcp.WithDescription("Exports a Google Doc to PDF format and saves it to Google Drive."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("document_id", mcp.Required(), mcp.Description("ID of the Google Doc to export.")),
-		mcp.WithString("pdf_filename", mcp.Description("Name for the PDF file. If not provided, uses original name + \"_PDF\".")),
-		mcp.WithString("folder_id", mcp.Description("Drive folder ID to save PDF in. If not provided, saves in root.")),
-	)
-	s.AddTool(tool, handleExportDocToPDF(getClient))
+func registerExportDocToPDF(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "export_doc_to_pdf",
+		Description: "Exports a Google Doc to PDF format and saves it to Google Drive.",
+	}
+	mcp.AddTool(s, tool, handleExportDocToPDF(getClient))
 }
 
-func handleExportDocToPDF(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// exportDocToPDFIn is the input schema for export_doc_to_pdf.
+type exportDocToPDFIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	DocumentID      string `json:"document_id" jsonschema:"ID of the Google Doc to export."`
+	PdfFilename     string "json:\"pdf_filename,omitempty\" jsonschema:\"Name for the PDF file. If not provided, uses original name + \\\"_PDF\\\".\""
+	FolderID        string `json:"folder_id,omitempty" jsonschema:"Drive folder ID to save PDF in. If not provided, saves in root."`
+}
+
+func handleExportDocToPDF(getClient httpClientFunc) mcp.ToolHandlerFor[exportDocToPDFIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in exportDocToPDFIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		documentID, err := request.RequireString("document_id")
-		if err != nil {
-			return mcp.NewToolResultError("document_id is required"), nil
-		}
-		pdfFilename := request.GetString("pdf_filename", "")
-		folderID := request.GetString("folder_id", "")
+		documentID := in.DocumentID
+		pdfFilename := in.PdfFilename
+		folderID := in.FolderID
 
 		driveSvc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Get file metadata to validate it's a Google Doc.
@@ -2147,7 +2171,7 @@ func handleExportDocToPDF(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			SupportsAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Error: Could not access document %s: %v", documentID, err)), nil
+			return nil, nil, toolErr("Error: Could not access document %s: %v", documentID, err)
 		}
 
 		mimeType := fileMeta.MimeType
@@ -2161,19 +2185,19 @@ func handleExportDocToPDF(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		}
 
 		if mimeType != "application/vnd.google-apps.document" {
-			return mcp.NewToolResultError(fmt.Sprintf("Error: File '%s' is not a Google Doc (MIME type: %s). Only native Google Docs can be exported to PDF.", originalName, mimeType)), nil
+			return nil, nil, toolErr("Error: File '%s' is not a Google Doc (MIME type: %s). Only native Google Docs can be exported to PDF.", originalName, mimeType)
 		}
 
 		// Export the document as PDF.
 		resp, err := driveSvc.Files.Export(documentID, "application/pdf").Download()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Error: Failed to export document to PDF: %v", err)), nil
+			return nil, nil, toolErr("Error: Failed to export document to PDF: %v", err)
 		}
 		defer resp.Body.Close()
 
 		pdfContent, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Error: Failed to read PDF data: %v", err)), nil
+			return nil, nil, toolErr("Error: Failed to read PDF data: %v", err)
 		}
 		pdfSize := len(pdfContent)
 
@@ -2199,7 +2223,7 @@ func handleExportDocToPDF(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			SupportsAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Error: Failed to upload PDF to Drive: %v. PDF was generated successfully (%d bytes) but could not be saved to Drive.", err, pdfSize)), nil
+			return nil, nil, toolErr("Error: Failed to upload PDF to Drive: %v. PDF was generated successfully (%d bytes) but could not be saved to Drive.", err, pdfSize)
 		}
 
 		pdfWebLink := uploaded.WebViewLink
@@ -2216,6 +2240,6 @@ func handleExportDocToPDF(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		msg := fmt.Sprintf("Successfully exported '%s' to PDF and saved to Drive as '%s' (ID: %s, %d bytes)%s. PDF: %s | Original: %s",
 			originalName, pdfFilename, uploaded.Id, pdfSize, folderInfo, pdfWebLink, webViewLink)
-		return mcp.NewToolResultText(msg), nil
+		return textResult(msg)
 	}
 }

@@ -5,22 +5,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
-// contactsTestServer creates an MCP server with specific Contacts tools registered,
-// backed by the given fake HTTP server.
-func contactsTestServer(t *testing.T, registerFuncs []func(s *mcpserver.MCPServer, getClient httpClientFunc), getClient httpClientFunc) *mcpserver.MCPServer {
-	t.Helper()
-	t.Setenv("USER_GOOGLE_EMAIL", "test@example.com")
-	t.Setenv("WORKSPACE_MCP_CREDENTIALS_DIR", t.TempDir())
-	s := mcpserver.NewMCPServer("test", "0.0.0")
-	for _, reg := range registerFuncs {
-		reg(s, getClient)
-	}
-	return s
-}
+// Direct handler invocations replace the previous contactsTestServer: each
+// test wires handleX to a fake People API served via testClientFunc/fakeAPIServer.
 
 // --- list_contacts ---
 
@@ -50,13 +38,9 @@ func TestContactsMockListContacts(t *testing.T) {
 				"totalPeople": 2,
 			},
 		})
-		s := contactsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerListContacts}, testClientFunc(ts))
-		text, isError := callTool(t, s, "list_contacts", map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handleListContacts(testClientFunc(ts)), "list_contacts", listContactsIn{
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "Contacts for test@example.com") {
 			t.Errorf("expected contacts header, got:\n%s", text)
 		}
@@ -78,13 +62,9 @@ func TestContactsMockListContacts(t *testing.T) {
 				"totalPeople": 0,
 			},
 		})
-		s := contactsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerListContacts}, testClientFunc(ts))
-		text, isError := callTool(t, s, "list_contacts", map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handleListContacts(testClientFunc(ts)), "list_contacts", listContactsIn{
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "No contacts found") {
 			t.Errorf("expected 'No contacts found', got:\n%s", text)
 		}
@@ -105,16 +85,12 @@ func TestContactsMockCreateContact(t *testing.T) {
 				}`)
 			},
 		})
-		s := contactsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerCreateContact}, testClientFunc(ts))
-		text, isError := callTool(t, s, "create_contact", map[string]any{
-			"given_name":        "Carol",
-			"family_name":       "White",
-			"email":             "carol@example.com",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handleCreateContact(testClientFunc(ts)), "create_contact", createContactIn{
+			GivenName:       "Carol",
+			FamilyName:      "White",
+			Email:           "carol@example.com",
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "Contact Created") {
 			t.Errorf("expected 'Contact Created', got:\n%s", text)
 		}
@@ -136,13 +112,9 @@ func TestContactsMockListContactGroups(t *testing.T) {
 				},
 			},
 		})
-		s := contactsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerListContactGroups}, testClientFunc(ts))
-		text, isError := callTool(t, s, "list_contact_groups", map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handleListContactGroups(testClientFunc(ts)), "list_contact_groups", listContactGroupsIn{
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "My Contacts") {
 			t.Errorf("expected 'My Contacts' in output, got:\n%s", text)
 		}
@@ -159,13 +131,9 @@ func TestContactsMockAPIError(t *testing.T) {
 		ts := fakeAPIServerWithStatus(t, map[string]statusResponse{
 			"/v1/people/me/connections": {code: 403, body: `{"error": {"code": 403, "message": "Forbidden"}}`},
 		})
-		s := contactsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerListContacts}, testClientFunc(ts))
-		text, isError := callTool(t, s, "list_contacts", map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handleListContacts(testClientFunc(ts)), "list_contacts", listContactsIn{
+			UserGoogleEmail: "test@example.com",
 		})
-		if !isError {
-			t.Fatalf("expected error, got success: %s", text)
-		}
 		if !strings.Contains(text, "listing contacts") {
 			t.Errorf("expected listing contacts error, got:\n%s", text)
 		}

@@ -17,9 +17,9 @@ func TestAppScriptMockListScriptProjects(t *testing.T) {
 				]
 			}`,
 		})
-		handler := makeListScriptProjectsHandler(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		handler := handleListScriptProjects(testClientFunc(ts))
+		text := callHandlerOK(t, handler, "list_script_projects", listScriptProjectsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Found 2 Apps Script projects") {
 			t.Errorf("expected 'Found 2 Apps Script projects', got:\n%s", text)
@@ -39,9 +39,9 @@ func TestAppScriptMockListScriptProjects(t *testing.T) {
 		ts := fakeAPIServer(t, map[string]any{
 			"/drive/v3/files": `{"files":[]}`,
 		})
-		handler := makeListScriptProjectsHandler(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		handler := handleListScriptProjects(testClientFunc(ts))
+		text := callHandlerOK(t, handler, "list_script_projects", listScriptProjectsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No Apps Script projects found") {
 			t.Errorf("expected 'No Apps Script projects found', got:\n%s", text)
@@ -59,10 +59,10 @@ func TestAppScriptMockCreateScriptProject(t *testing.T) {
 				"title":    "New Automation",
 			},
 		})
-		handler := makeCreateScriptProjectHandler(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"title":             "New Automation",
-			"user_google_email": "test@example.com",
+		handler := handleCreateScriptProject(testClientFunc(ts))
+		text := callHandlerOK(t, handler, "create_script_project", createScriptProjectIn{
+			Title:           "New Automation",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Created Apps Script project") {
 			t.Errorf("expected 'Created Apps Script project', got:\n%s", text)
@@ -81,14 +81,10 @@ func TestAppScriptMockCreateScriptProject(t *testing.T) {
 func TestAppScriptMockGenerateTriggerCode(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		// This handler doesn't need a fake server — it generates code locally.
-		s := newToolTestServer(t)
-		text, isError := callTool(t, s, "generate_trigger_code", map[string]any{
-			"trigger_type":  "time_daily",
-			"function_name": "sendDailyReport",
+		text := callHandlerOK(t, generateTriggerCodeHandler, "generate_trigger_code", generateTriggerCodeIn{
+			TriggerType:  "time_daily",
+			FunctionName: "sendDailyReport",
 		})
-		if isError {
-			t.Fatalf("expected success, got error: %s", text)
-		}
 		if !strings.Contains(text, "sendDailyReport") {
 			t.Errorf("expected function name in output, got:\n%s", text)
 		}
@@ -105,9 +101,9 @@ func TestAppScriptMockAPIError(t *testing.T) {
 		ts := fakeAPIServerWithStatus(t, map[string]statusResponse{
 			"/drive/v3/files": {code: 403, body: `{"error": {"code": 403, "message": "Forbidden"}}`},
 		})
-		handler := makeListScriptProjectsHandler(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		handler := handleListScriptProjects(testClientFunc(ts))
+		text := callHandlerErr(t, handler, "list_script_projects", listScriptProjectsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "listing script projects") {
 			t.Errorf("expected listing error, got:\n%s", text)
@@ -118,10 +114,10 @@ func TestAppScriptMockAPIError(t *testing.T) {
 		ts := fakeAPIServerWithStatus(t, map[string]statusResponse{
 			"/v1/projects": {code: 500, body: `{"error": {"code": 500, "message": "Internal Server Error"}}`},
 		})
-		handler := makeCreateScriptProjectHandler(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"title":             "Bad Script",
-			"user_google_email": "test@example.com",
+		handler := handleCreateScriptProject(testClientFunc(ts))
+		text := callHandlerErr(t, handler, "create_script_project", createScriptProjectIn{
+			Title:           "Bad Script",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "creating script project") {
 			t.Errorf("expected creation error, got:\n%s", text)

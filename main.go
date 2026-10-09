@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/magks/google-workspace-mcp-go/auth"
 	"github.com/magks/google-workspace-mcp-go/server"
 	"github.com/magks/google-workspace-mcp-go/tools"
 )
@@ -50,12 +53,56 @@ func run() error {
 
 	switch cfg.Transport {
 	case "streamable-http":
-		fmt.Fprintln(os.Stderr, "streamable-http transport is not yet implemented")
-		return nil
+		return serveStreamableHTTP(cfg, s)
 	default:
-		errLogger := log.New(os.Stderr, "", log.LstdFlags)
-		return mcpserver.ServeStdio(s, mcpserver.WithErrorLogger(errLogger))
+		// Run blocks until the client disconnects or the process is
+		// interrupted; on a clean disconnect it returns nil.
+		return s.Run(context.Background(), &mcp.StdioTransport{})
 	}
+}
+
+// serveStreamableHTTP serves the MCP server over the stateless Streamable
+// HTTP transport per protocol revision 2026-07-28:
+//   - Stateless mode: no session IDs (Mcp-Session-Id is never set), each
+//     request is processed independently; GET/DELETE on the MCP endpoint
+//     return 405.
+//   - The handler validates that the MCP-Protocol-Version header matches
+//     the _meta protocol version in the body and rejects unsupported
+//     versions per the spec.
+//
+// The endpoint is additionally protected against cross-origin and DNS
+// rebinding requests with the cross-origin protection middleware; the spec
+// requires Origin validation for local HTTP servers.
+func serveStreamableHTTP(cfg server.Config, s *mcp.Server) error {
+	addr := fmt.Sprintf("%s:%d", cfg.HTTPHost, cfg.HTTPPort)
+	var handler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{
+		Stateless: true,
+		Logger:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	})
+
+	// Bearer authentication per the MCP authorization framework, enabled
+	// when MCP_AUTH_JWKS_URL is configured. JWTs are verified against the
+	// authorization server's JWKS; failures respond 401 with a
+	// WWW-Authenticate header advertising the protected resource metadata.
+	if authJWKS := os.Getenv("MCP_AUTH_JWKS_URL"); authJWKS != "" {
+		middleware, err := auth.BearerMiddleware(&auth.BearerConfig{
+			JWKSURL:             authJWKS,
+			Issuer:              os.Getenv("MCP_AUTH_ISSUER"),
+			Audience:            os.Getenv("MCP_AUTH_AUDIENCE"),
+			ResourceMetadataURL: os.Getenv("MCP_RESOURCE_METADATA_URL"),
+			Scopes:              strings.Fields(os.Getenv("MCP_AUTH_SCOPES")),
+		})
+		if err != nil {
+			return fmt.Errorf("configuring bearer auth: %w", err)
+		}
+		handler = middleware(handler)
+		fmt.Fprintln(os.Stderr, "bearer-token authentication enabled (MCP_AUTH_JWKS_URL set)")
+	}
+
+	// Cross-origin / DNS rebinding protection wraps the outermost layer.
+	protected := http.NewCrossOriginProtection().Handler(handler)
+	fmt.Fprintf(os.Stderr, "serving streamable-http (stateless) on http://%s/mcp\n", addr)
+	return http.ListenAndServe(addr, protected)
 }
 
 // parseFlags parses CLI arguments into a server.Config.
@@ -72,6 +119,10 @@ func parseFlags(args []string) (server.Config, error) {
 	fs.BoolVar(&singleUser, "single-user", false, "enable single-user mode")
 	var readOnly bool
 	fs.BoolVar(&readOnly, "read-only", false, "enable read-only mode (no write tools)")
+	var httpHost string
+	fs.StringVar(&httpHost, "http-host", "127.0.0.1", "host to bind for streamable-http transport (bind to localhost by default)")
+	var httpPort int
+	fs.IntVar(&httpPort, "http-port", 8080, "port to bind for streamable-http transport")
 
 	if err := fs.Parse(args); err != nil {
 		return server.Config{}, err
@@ -104,5 +155,7 @@ func parseFlags(args []string) (server.Config, error) {
 		Transport:  transport,
 		SingleUser: singleUser,
 		ReadOnly:   readOnly,
+		HTTPHost:   httpHost,
+		HTTPPort:   httpPort,
 	}, nil
 }

@@ -73,9 +73,9 @@ func TestDriveMockSearchFiles(t *testing.T) {
 			}`,
 		})
 		handler := handleSearchDriveFiles(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"query":             "test documents",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "search_drive_files", searchDriveFilesIn{
+			Query:           "test documents",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Found 2 files") {
 			t.Errorf("expected 'Found 2 files', got:\n%s", text)
@@ -96,9 +96,9 @@ func TestDriveMockSearchFiles(t *testing.T) {
 			"/drive/v3/files": `{"files":[]}`,
 		})
 		handler := handleSearchDriveFiles(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"query":             "nonexistent file",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "search_drive_files", searchDriveFilesIn{
+			Query:           "nonexistent file",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No files found") {
 			t.Errorf("expected 'No files found', got:\n%s", text)
@@ -114,9 +114,9 @@ func TestDriveMockSearchFiles(t *testing.T) {
 			}`,
 		})
 		handler := handleSearchDriveFiles(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"query":             "name = 'Report.pdf'",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "search_drive_files", searchDriveFilesIn{
+			Query:           "name = 'Report.pdf'",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Found 1 files") {
 			t.Errorf("expected 'Found 1 files', got:\n%s", text)
@@ -144,9 +144,9 @@ func TestDriveMockGetFileContent(t *testing.T) {
 			},
 		})
 		handler := handleGetDriveFileContent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_id":           "file001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_drive_file_content", getDriveFileContentIn{
+			FileID:          "file001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "readme.txt") {
 			t.Errorf("expected file name in output, got:\n%s", text)
@@ -173,9 +173,9 @@ func TestDriveMockGetFileContent(t *testing.T) {
 			},
 		})
 		handler := handleGetDriveFileContent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_id":           "doc001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_drive_file_content", getDriveFileContentIn{
+			FileID:          "doc001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "My Document") {
 			t.Errorf("expected document name in output, got:\n%s", text)
@@ -197,10 +197,10 @@ func TestDriveMockCreateFile(t *testing.T) {
 			},
 		})
 		handler := handleCreateDriveFile(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_name":         "test-file.txt",
-			"content":           "Hello, world!",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_drive_file", createDriveFileIn{
+			FileName:        "test-file.txt",
+			Content:         "Hello, world!",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully created file") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -216,9 +216,9 @@ func TestDriveMockCreateFile(t *testing.T) {
 	t.Run("error_no_content_or_url", func(t *testing.T) {
 		ts := fakeAPIServer(t, map[string]any{})
 		handler := handleCreateDriveFile(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"file_name":         "empty.txt",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "create_drive_file", createDriveFileIn{
+			FileName:        "empty.txt",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "content") && !strings.Contains(text, "fileUrl") {
 			t.Errorf("expected error about missing content/fileUrl, got:\n%s", text)
@@ -237,11 +237,11 @@ func TestDriveMockCreateFile(t *testing.T) {
 			},
 		})
 		handler := handleCreateDriveFile(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_name":         "subfolder-file.txt",
-			"content":           "File in a subfolder",
-			"folder_id":         "folder001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_drive_file", createDriveFileIn{
+			FileName:        "subfolder-file.txt",
+			Content:         "File in a subfolder",
+			FolderID:        "folder001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully created file") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -267,11 +267,11 @@ func TestDriveMockShareFile(t *testing.T) {
 			},
 		})
 		handler := handleShareDriveFile(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_id":           "file001",
-			"share_with":        "reader@example.com",
-			"role":              "reader",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "share_drive_file", shareDriveFileIn{
+			FileID:          "file001",
+			ShareWith:       "reader@example.com",
+			Role:            "reader",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully shared") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -296,11 +296,11 @@ func TestDriveMockShareFile(t *testing.T) {
 			},
 		})
 		handler := handleShareDriveFile(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_id":           "file002",
-			"share_type":        "anyone",
-			"role":              "reader",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "share_drive_file", shareDriveFileIn{
+			FileID:          "file002",
+			ShareType:       "anyone",
+			Role:            "reader",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully shared") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -313,11 +313,11 @@ func TestDriveMockShareFile(t *testing.T) {
 	t.Run("error_missing_share_with_for_user", func(t *testing.T) {
 		ts := fakeAPIServer(t, map[string]any{})
 		handler := handleShareDriveFile(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"file_id":           "file001",
-			"share_type":        "user",
-			"role":              "reader",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "share_drive_file", shareDriveFileIn{
+			FileID:          "file001",
+			ShareType:       "user",
+			Role:            "reader",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "share_with is required") {
 			t.Errorf("expected share_with error, got:\n%s", text)
@@ -327,11 +327,11 @@ func TestDriveMockShareFile(t *testing.T) {
 	t.Run("error_invalid_role", func(t *testing.T) {
 		ts := fakeAPIServer(t, map[string]any{})
 		handler := handleShareDriveFile(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"file_id":           "file001",
-			"share_with":        "user@example.com",
-			"role":              "admin",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "share_drive_file", shareDriveFileIn{
+			FileID:          "file001",
+			ShareWith:       "user@example.com",
+			Role:            "admin",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Invalid role") {
 			t.Errorf("expected invalid role error, got:\n%s", text)
@@ -353,8 +353,8 @@ func TestDriveMockListItems(t *testing.T) {
 			}`,
 		})
 		handler := handleListDriveItems(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_drive_items", listDriveItemsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Found 2 items") {
 			t.Errorf("expected 'Found 2 items', got:\n%s", text)
@@ -372,8 +372,8 @@ func TestDriveMockListItems(t *testing.T) {
 			"/drive/v3/files": `{"files":[]}`,
 		})
 		handler := handleListDriveItems(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_drive_items", listDriveItemsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No items found") {
 			t.Errorf("expected 'No items found', got:\n%s", text)
@@ -403,9 +403,9 @@ func TestDriveMockGetFilePermissions(t *testing.T) {
 			},
 		})
 		handler := handleGetDriveFilePermissions(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_id":           "file001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_drive_file_permissions", getDriveFilePermissionsIn{
+			FileID:          "file001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Shared Document") {
 			t.Errorf("expected file name in output, got:\n%s", text)
@@ -440,9 +440,9 @@ func TestDriveMockGetFilePermissions(t *testing.T) {
 			},
 		})
 		handler := handleGetDriveFilePermissions(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_id":           "file002",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_drive_file_permissions", getDriveFilePermissionsIn{
+			FileID:          "file002",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Private File") {
 			t.Errorf("expected file name in output")
@@ -468,10 +468,10 @@ func TestDriveMockUpdateFile(t *testing.T) {
 			},
 		})
 		handler := handleUpdateDriveFile(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_id":           "file001",
-			"name":              "Renamed File.txt",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "update_drive_file", updateDriveFileIn{
+			FileID:          "file001",
+			Name:            "Renamed File.txt",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully updated file") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -489,9 +489,9 @@ func TestDriveMockUpdateFile(t *testing.T) {
 			},
 		})
 		handler := handleUpdateDriveFile(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"file_id":           "file001",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "update_drive_file", updateDriveFileIn{
+			FileID:          "file001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No updates specified") {
 			t.Errorf("expected no updates error, got:\n%s", text)
@@ -514,9 +514,9 @@ func TestDriveMockCopyFile(t *testing.T) {
 			},
 		})
 		handler := handleCopyDriveFile(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_id":           "file001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "copy_drive_file", copyDriveFileIn{
+			FileID:          "file001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully copied") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -545,9 +545,9 @@ func TestDriveMockCheckPublicAccess(t *testing.T) {
 			},
 		})
 		handler := handleCheckDriveFilePublicAccess(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_name":         "photo.png",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "check_drive_file_public_access", checkDriveFilePublicAccessIn{
+			FileName:        "photo.png",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "PUBLIC ACCESS ENABLED") {
 			t.Errorf("expected PUBLIC ACCESS ENABLED, got:\n%s", text)
@@ -566,9 +566,9 @@ func TestDriveMockCheckPublicAccess(t *testing.T) {
 			},
 		})
 		handler := handleCheckDriveFilePublicAccess(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_name":         "secret.doc",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "check_drive_file_public_access", checkDriveFilePublicAccessIn{
+			FileName:        "secret.doc",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "NO PUBLIC ACCESS") {
 			t.Errorf("expected NO PUBLIC ACCESS, got:\n%s", text)
@@ -580,9 +580,9 @@ func TestDriveMockCheckPublicAccess(t *testing.T) {
 			"/drive/v3/files": `{"files":[]}`,
 		})
 		handler := handleCheckDriveFilePublicAccess(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_name":         "nonexistent.pdf",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "check_drive_file_public_access", checkDriveFilePublicAccessIn{
+			FileName:        "nonexistent.pdf",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No file found") {
 			t.Errorf("expected no file found message, got:\n%s", text)
@@ -605,9 +605,9 @@ func TestDriveMockGetShareableLink(t *testing.T) {
 			},
 		})
 		handler := handleGetDriveShareableLink(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"file_id":           "file001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_drive_shareable_link", getDriveShareableLinkIn{
+			FileID:          "file001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Presentation.pptx") {
 			t.Errorf("expected file name in output")
@@ -629,9 +629,9 @@ func TestDriveMockAPIError(t *testing.T) {
 			"/drive/v3/files": {code: 403, body: `{"error": {"code": 403, "message": "Insufficient Permission", "status": "PERMISSION_DENIED"}}`},
 		})
 		handler := handleSearchDriveFiles(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"query":             "test",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "search_drive_files", searchDriveFilesIn{
+			Query:           "test",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Drive API error") {
 			t.Errorf("expected Drive API error, got:\n%s", text)
@@ -643,9 +643,9 @@ func TestDriveMockAPIError(t *testing.T) {
 			"/drive/v3/files/nonexistent": {code: 404, body: `{"error": {"code": 404, "message": "File not found"}}`},
 		})
 		handler := handleGetDriveFileContent(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"file_id":           "nonexistent",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "get_drive_file_content", getDriveFileContentIn{
+			FileID:          "nonexistent",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Drive API error") {
 			t.Errorf("expected Drive API error, got:\n%s", text)
@@ -657,10 +657,10 @@ func TestDriveMockAPIError(t *testing.T) {
 			"/upload/drive/v3/files": {code: 500, body: `{"error": {"code": 500, "message": "Internal Server Error"}}`},
 		})
 		handler := handleCreateDriveFile(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"file_name":         "fail.txt",
-			"content":           "data",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "create_drive_file", createDriveFileIn{
+			FileName:        "fail.txt",
+			Content:         "data",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Drive API error") {
 			t.Errorf("expected Drive API error, got:\n%s", text)
@@ -680,10 +680,10 @@ func TestDriveMockAPIError(t *testing.T) {
 			},
 		})
 		handler := handleShareDriveFile(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"file_id":           "file001",
-			"share_with":        "user@example.com",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "share_drive_file", shareDriveFileIn{
+			FileID:          "file001",
+			ShareWith:       "user@example.com",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Drive API error") {
 			t.Errorf("expected Drive API error, got:\n%s", text)

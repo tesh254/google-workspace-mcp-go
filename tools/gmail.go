@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/google/jsonschema-go/jsonschema"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	gmail "google.golang.org/api/gmail/v1"
 
 	"github.com/magks/google-workspace-mcp-go/internal/google"
@@ -25,7 +25,7 @@ var gmailMetadataHeaders = []string{"Subject", "From", "To", "Cc", "Date", "Mess
 const gmailBatchSize = 25
 
 // RegisterGmailTools registers all Gmail tools with the MCP server.
-func RegisterGmailTools(s *mcpserver.MCPServer, _ server.Config) {
+func RegisterGmailTools(s *mcp.Server, _ server.Config) {
 	getClient := clientFuncFromCache(google.DefaultClientCache())
 
 	// Read tools
@@ -63,33 +63,38 @@ func newGmailService(ctx context.Context, getClient httpClientFunc, email string
 
 // --- search_gmail_messages ---
 
-func registerSearchGmailMessages(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("search_gmail_messages",
-		mcp.WithDescription("Searches messages in a user's Gmail account based on a query. Returns both Message IDs and Thread IDs for each found message, along with Gmail web interface links for manual verification. Supports pagination via page_token parameter."),
-		mcp.WithString("query", mcp.Required(), mcp.Description("The search query. Supports standard Gmail search operators.")),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithNumber("page_size", mcp.Description("The maximum number of messages to return. Defaults to 10.")),
-		mcp.WithString("page_token", mcp.Description("Token for retrieving the next page of results. Use the next_page_token from a previous response.")),
-	)
-	s.AddTool(tool, handleSearchGmailMessages(getClient))
+// searchGmailMessagesIn is the input schema for search_gmail_messages.
+type searchGmailMessagesIn struct {
+	Query           string `json:"query" jsonschema:"The search query. Supports standard Gmail search operators."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	PageSize        int    `json:"page_size,omitempty" jsonschema:"The maximum number of messages to return. Defaults to 10."`
+	PageToken       string `json:"page_token,omitempty" jsonschema:"Token for retrieving the next page of results. Use the next_page_token from a previous response."`
 }
 
-func handleSearchGmailMessages(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query, err := request.RequireString("query")
+func registerSearchGmailMessages(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "search_gmail_messages",
+		Description: "Searches messages in a user's Gmail account based on a query. Returns both Message IDs and Thread IDs for each found message, along with Gmail web interface links for manual verification. Supports pagination via page_token parameter.",
+	}
+	mcp.AddTool(s, tool, handleSearchGmailMessages(getClient))
+}
+
+func handleSearchGmailMessages(getClient httpClientFunc) mcp.ToolHandlerFor[searchGmailMessagesIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchGmailMessagesIn) (*mcp.CallToolResult, any, error) {
+		query := in.Query
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("query is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 10
 		}
-		pageSize := request.GetInt("page_size", 10)
-		pageToken := request.GetString("page_token", "")
+		pageToken := in.PageToken
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		call := svc.Users.Messages.List("me").Q(query).MaxResults(int64(pageSize))
@@ -99,7 +104,7 @@ func handleSearchGmailMessages(getClient httpClientFunc) mcpserver.ToolHandlerFu
 
 		resp, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
 		messages := resp.Messages
@@ -107,7 +112,7 @@ func handleSearchGmailMessages(getClient httpClientFunc) mcpserver.ToolHandlerFu
 			messages = []*gmail.Message{}
 		}
 
-		return mcp.NewToolResultText(formatSearchResults(messages, query, resp.NextPageToken)), nil
+		return textResult(formatSearchResults(messages, query, resp.NextPageToken))
 	}
 }
 
@@ -137,49 +142,51 @@ func formatSearchResults(messages []*gmail.Message, query, nextPageToken string)
 
 // --- get_gmail_message_content ---
 
-func registerGetGmailMessageContent(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_gmail_message_content",
-		mcp.WithDescription("Retrieves the full content (subject, sender, recipients, plain text body) of a specific Gmail message."),
-		mcp.WithString("message_id", mcp.Required(), mcp.Description("The unique ID of the Gmail message to retrieve.")),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-	)
-	s.AddTool(tool, handleGetGmailMessageContent(getClient))
+// getGmailMessageContentIn is the input schema for get_gmail_message_content.
+type getGmailMessageContentIn struct {
+	MessageID       string `json:"message_id" jsonschema:"The unique ID of the Gmail message to retrieve."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
 }
 
-func handleGetGmailMessageContent(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		messageID, err := request.RequireString("message_id")
+func registerGetGmailMessageContent(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_gmail_message_content",
+		Description: "Retrieves the full content (subject, sender, recipients, plain text body) of a specific Gmail message.",
+	}
+	mcp.AddTool(s, tool, handleGetGmailMessageContent(getClient))
+}
+
+func handleGetGmailMessageContent(getClient httpClientFunc) mcp.ToolHandlerFor[getGmailMessageContentIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getGmailMessageContentIn) (*mcp.CallToolResult, any, error) {
+		messageID := in.MessageID
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("message_id is required"), nil
-		}
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Fetch metadata headers.
 		metaMsg, err := svc.Users.Messages.Get("me", messageID).Format("metadata").MetadataHeaders(gmailMetadataHeaders...).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 		headers := extractHeaders(metaMsg.Payload, gmailMetadataHeaders)
 
 		// Fetch full message for body.
 		fullMsg, err := svc.Users.Messages.Get("me", messageID).Format("full").Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
 		textBody, htmlBody := extractMessageBodies(fullMsg.Payload)
 		bodyData := formatBodyContent(textBody, htmlBody)
 		attachments := extractAttachments(fullMsg.Payload)
 
-		return mcp.NewToolResultText(formatMessageContent(messageID, headers, bodyData, attachments)), nil
+		return textResult(formatMessageContent(messageID, headers, bodyData, attachments))
 	}
 }
 
@@ -219,41 +226,41 @@ func formatMessageContent(messageID string, headers map[string]string, bodyData 
 
 // --- get_gmail_messages_content_batch ---
 
-func registerGetGmailMessagesContentBatch(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_gmail_messages_content_batch",
-		mcp.WithDescription("Retrieves the content of multiple Gmail messages in a single batch request. Supports up to 25 messages per batch to prevent SSL connection exhaustion."),
-		mcp.WithArray("message_ids",
-			mcp.Required(),
-			mcp.Description("List of Gmail message IDs to retrieve (max 25 per batch)."),
-			mcp.Items(map[string]any{"type": "string"}),
-		),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("format",
-			mcp.Description("Message format. \"full\" includes body, \"metadata\" only headers."),
-			mcp.Enum("full", "metadata"),
-		),
-	)
-	s.AddTool(tool, handleGetGmailMessagesContentBatch(getClient))
+// getGmailMessagesContentBatchIn is the input schema for get_gmail_messages_content_batch.
+type getGmailMessagesContentBatchIn struct {
+	MessageIDs      []string `json:"message_ids" jsonschema:"List of Gmail message IDs to retrieve (max 25 per batch)."`
+	UserGoogleEmail string   `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	Format          string   `json:"format,omitempty" jsonschema:"Message format. \"full\" includes body, \"metadata\" only headers."`
 }
 
-func handleGetGmailMessagesContentBatch(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		messageIDs, err := request.RequireStringSlice("message_ids")
-		if err != nil {
-			return mcp.NewToolResultError("message_ids is required"), nil
-		}
+func registerGetGmailMessagesContentBatch(s *mcp.Server, getClient httpClientFunc) {
+	tool := inputSchema[getGmailMessagesContentBatchIn](&mcp.Tool{
+		Name:        "get_gmail_messages_content_batch",
+		Description: "Retrieves the content of multiple Gmail messages in a single batch request. Supports up to 25 messages per batch to prevent SSL connection exhaustion.",
+	}, func(sch *jsonschema.Schema) {
+		setEnum(sch, "format", "full", "metadata")
+	})
+	mcp.AddTool(s, tool, handleGetGmailMessagesContentBatch(getClient))
+}
+
+func handleGetGmailMessagesContentBatch(getClient httpClientFunc) mcp.ToolHandlerFor[getGmailMessagesContentBatchIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getGmailMessagesContentBatchIn) (*mcp.CallToolResult, any, error) {
+		messageIDs := in.MessageIDs
 		if len(messageIDs) == 0 {
-			return mcp.NewToolResultError("No message IDs provided"), nil
+			return nil, nil, toolErr("No message IDs provided")
 		}
-		email, err := resolveEmail(request)
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		format := request.GetString("format", "full")
+		format := in.Format
+		if format == "" {
+			format = "full"
+		}
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		var outputMessages []string
@@ -286,7 +293,7 @@ func handleGetGmailMessagesContentBatch(getClient httpClientFunc) mcpserver.Tool
 		}
 
 		result := fmt.Sprintf("Retrieved %d messages:\n\n%s", len(messageIDs), strings.Join(outputMessages, "\n---\n\n"))
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
@@ -324,42 +331,41 @@ func formatBatchMessage(mid string, msg *gmail.Message, format string) string {
 
 // --- get_gmail_attachment_content ---
 
-func registerGetGmailAttachmentContent(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_gmail_attachment_content",
-		mcp.WithDescription("Downloads the content of a specific email attachment."),
-		mcp.WithString("message_id", mcp.Required(), mcp.Description("The ID of the Gmail message containing the attachment.")),
-		mcp.WithString("attachment_id", mcp.Required(), mcp.Description("The ID of the attachment to download.")),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-	)
-	s.AddTool(tool, handleGetGmailAttachmentContent(getClient))
+// getGmailAttachmentContentIn is the input schema for get_gmail_attachment_content.
+type getGmailAttachmentContentIn struct {
+	MessageID       string `json:"message_id" jsonschema:"The ID of the Gmail message containing the attachment."`
+	AttachmentID    string `json:"attachment_id" jsonschema:"The ID of the attachment to download."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
 }
 
-func handleGetGmailAttachmentContent(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		messageID, err := request.RequireString("message_id")
+func registerGetGmailAttachmentContent(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_gmail_attachment_content",
+		Description: "Downloads the content of a specific email attachment.",
+	}
+	mcp.AddTool(s, tool, handleGetGmailAttachmentContent(getClient))
+}
+
+func handleGetGmailAttachmentContent(getClient httpClientFunc) mcp.ToolHandlerFor[getGmailAttachmentContentIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getGmailAttachmentContentIn) (*mcp.CallToolResult, any, error) {
+		messageID := in.MessageID
+		attachmentID := in.AttachmentID
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("message_id is required"), nil
-		}
-		attachmentID, err := request.RequireString("attachment_id")
-		if err != nil {
-			return mcp.NewToolResultError("attachment_id is required"), nil
-		}
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		att, err := svc.Users.Messages.Attachments.Get("me", messageID, attachmentID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf(
+			return nil, nil, toolErr(
 				"Error: Failed to download attachment. The attachment ID may have changed.\n"+
 					"Please fetch the message content again to get an updated attachment ID.\n\n"+
-					"Error details: %v", err)), nil
+					"Error details: %v", err)
 		}
 
 		sizeBytes := att.Size
@@ -378,43 +384,45 @@ func handleGetGmailAttachmentContent(getClient httpClientFunc) mcpserver.ToolHan
 		fmt.Fprintf(&b, "%s...\n", preview)
 		b.WriteString("\nNote: Attachment IDs are ephemeral. Always use IDs from the most recent message fetch.")
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- get_gmail_thread_content ---
 
-func registerGetGmailThreadContent(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_gmail_thread_content",
-		mcp.WithDescription("Retrieves the complete content of a Gmail conversation thread, including all messages."),
-		mcp.WithString("thread_id", mcp.Required(), mcp.Description("The unique ID of the Gmail thread to retrieve.")),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-	)
-	s.AddTool(tool, handleGetGmailThreadContent(getClient))
+// getGmailThreadContentIn is the input schema for get_gmail_thread_content.
+type getGmailThreadContentIn struct {
+	ThreadID        string `json:"thread_id" jsonschema:"The unique ID of the Gmail thread to retrieve."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
 }
 
-func handleGetGmailThreadContent(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		threadID, err := request.RequireString("thread_id")
+func registerGetGmailThreadContent(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_gmail_thread_content",
+		Description: "Retrieves the complete content of a Gmail conversation thread, including all messages.",
+	}
+	mcp.AddTool(s, tool, handleGetGmailThreadContent(getClient))
+}
+
+func handleGetGmailThreadContent(getClient httpClientFunc) mcp.ToolHandlerFor[getGmailThreadContentIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getGmailThreadContentIn) (*mcp.CallToolResult, any, error) {
+		threadID := in.ThreadID
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("thread_id is required"), nil
-		}
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		thread, err := svc.Users.Threads.Get("me", threadID).Format("full").Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
-		return mcp.NewToolResultText(formatThreadContent(thread, threadID)), nil
+		return textResult(formatThreadContent(thread, threadID))
 	}
 }
 
@@ -452,36 +460,34 @@ func formatThreadContent(thread *gmail.Thread, threadID string) string {
 
 // --- get_gmail_threads_content_batch ---
 
-func registerGetGmailThreadsContentBatch(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_gmail_threads_content_batch",
-		mcp.WithDescription("Retrieves the content of multiple Gmail threads in a single batch request. Supports up to 25 threads per batch to prevent SSL connection exhaustion."),
-		mcp.WithArray("thread_ids",
-			mcp.Required(),
-			mcp.Description("A list of Gmail thread IDs to retrieve. The function will automatically batch requests in chunks of 25."),
-			mcp.Items(map[string]any{"type": "string"}),
-		),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-	)
-	s.AddTool(tool, handleGetGmailThreadsContentBatch(getClient))
+// getGmailThreadsContentBatchIn is the input schema for get_gmail_threads_content_batch.
+type getGmailThreadsContentBatchIn struct {
+	ThreadIDs       []string `json:"thread_ids" jsonschema:"A list of Gmail thread IDs to retrieve. The function will automatically batch requests in chunks of 25."`
+	UserGoogleEmail string   `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
 }
 
-func handleGetGmailThreadsContentBatch(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		threadIDs, err := request.RequireStringSlice("thread_ids")
-		if err != nil {
-			return mcp.NewToolResultError("thread_ids is required"), nil
-		}
+func registerGetGmailThreadsContentBatch(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_gmail_threads_content_batch",
+		Description: "Retrieves the content of multiple Gmail threads in a single batch request. Supports up to 25 threads per batch to prevent SSL connection exhaustion.",
+	}
+	mcp.AddTool(s, tool, handleGetGmailThreadsContentBatch(getClient))
+}
+
+func handleGetGmailThreadsContentBatch(getClient httpClientFunc) mcp.ToolHandlerFor[getGmailThreadsContentBatchIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getGmailThreadsContentBatchIn) (*mcp.CallToolResult, any, error) {
+		threadIDs := in.ThreadIDs
 		if len(threadIDs) == 0 {
-			return mcp.NewToolResultError("No thread IDs provided"), nil
+			return nil, nil, toolErr("No thread IDs provided")
 		}
-		email, err := resolveEmail(request)
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		var outputThreads []string
@@ -504,40 +510,45 @@ func handleGetGmailThreadsContentBatch(getClient httpClientFunc) mcpserver.ToolH
 		}
 
 		result := fmt.Sprintf("Retrieved %d threads:\n\n%s", len(threadIDs), strings.Join(outputThreads, "\n---\n\n"))
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
 // --- list_gmail_labels ---
 
-func registerListGmailLabels(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_gmail_labels",
-		mcp.WithDescription("Lists all labels in the user's Gmail account."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-	)
-	s.AddTool(tool, handleListGmailLabels(getClient))
+// listGmailLabelsIn is the input schema for list_gmail_labels.
+type listGmailLabelsIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
 }
 
-func handleListGmailLabels(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerListGmailLabels(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "list_gmail_labels",
+		Description: "Lists all labels in the user's Gmail account.",
+	}
+	mcp.AddTool(s, tool, handleListGmailLabels(getClient))
+}
+
+func handleListGmailLabels(getClient httpClientFunc) mcp.ToolHandlerFor[listGmailLabelsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listGmailLabelsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resp, err := svc.Users.Labels.List("me").Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
 		labels := resp.Labels
 		if len(labels) == 0 {
-			return mcp.NewToolResultText("No labels found."), nil
+			return textResult("No labels found.")
 		}
 
 		var systemLabels, userLabels []*gmail.Label
@@ -566,66 +577,70 @@ func handleListGmailLabels(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			}
 		}
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- send_gmail_message ---
 
-func registerSendGmailMessage(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("send_gmail_message",
-		mcp.WithDescription("Sends an email using the user's Gmail account. Supports both new emails and replies with optional attachments. Supports Gmail's \"Send As\" feature to send from configured alias addresses."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("to", mcp.Required(), mcp.Description("Recipient email address.")),
-		mcp.WithString("subject", mcp.Required(), mcp.Description("Email subject.")),
-		mcp.WithString("body", mcp.Required(), mcp.Description("Email body content (plain text or HTML).")),
-		mcp.WithString("body_format", mcp.Description("Email body format."), mcp.Enum("plain", "html")),
-		mcp.WithString("cc", mcp.Description("CC email address.")),
-		mcp.WithString("bcc", mcp.Description("BCC email address.")),
-		mcp.WithString("from_name", mcp.Description("Sender display name for \"Name <email>\" formatting.")),
-		mcp.WithString("from_email", mcp.Description("\"Send As\" alias email (must be configured in Gmail settings).")),
-		mcp.WithString("thread_id", mcp.Description("Gmail thread ID to reply within.")),
-		mcp.WithString("in_reply_to", mcp.Description("Message-ID of message being replied to.")),
-		mcp.WithString("references", mcp.Description("Chain of Message-IDs for proper threading.")),
-		mcp.WithArray("attachments",
-			mcp.Description("Optional list of attachments. Each can have: \"path\" (file path, auto-encodes), OR \"content\" (standard base64, not urlsafe) + \"filename\". Optional \"mime_type\". Example: [{\"path\": \"/path/to/file.pdf\"}] or [{\"filename\": \"doc.pdf\", \"content\": \"base64data\", \"mime_type\": \"application/pdf\"}]"),
-			mcp.Items(map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}}),
-		),
-	)
-	s.AddTool(tool, handleSendGmailMessage(getClient))
+// sendGmailMessageIn is the input schema for send_gmail_message.
+type sendGmailMessageIn struct {
+	UserGoogleEmail string           `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	To              string           `json:"to" jsonschema:"Recipient email address."`
+	Subject         string           `json:"subject" jsonschema:"Email subject."`
+	Body            string           `json:"body" jsonschema:"Email body content (plain text or HTML)."`
+	BodyFormat      string           `json:"body_format,omitempty" jsonschema:"Email body format."`
+	Cc              string           `json:"cc,omitempty" jsonschema:"CC email address."`
+	Bcc             string           `json:"bcc,omitempty" jsonschema:"BCC email address."`
+	FromName        string           `json:"from_name,omitempty" jsonschema:"Sender display name for \"Name <email>\" formatting."`
+	FromEmail       string           `json:"from_email,omitempty" jsonschema:"\"Send As\" alias email (must be configured in Gmail settings)."`
+	ThreadID        string           `json:"thread_id,omitempty" jsonschema:"Gmail thread ID to reply within."`
+	InReplyTo       string           `json:"in_reply_to,omitempty" jsonschema:"Message-ID of message being replied to."`
+	References      string           `json:"references,omitempty" jsonschema:"Chain of Message-IDs for proper threading."`
+	Attachments     []map[string]any `json:"attachments,omitempty" jsonschema:"Optional list of attachments. Each can have: \"path\" (file path, auto-encodes), OR \"content\" (standard base64, not urlsafe) + \"filename\". Optional \"mime_type\". Example: [{\"path\": \"/path/to/file.pdf\"}] or [{\"filename\": \"doc.pdf\", \"content\": \"base64data\", \"mime_type\": \"application/pdf\"}]"`
 }
 
-func handleSendGmailMessage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+func registerSendGmailMessage(s *mcp.Server, getClient httpClientFunc) {
+	tool := inputSchema[sendGmailMessageIn](&mcp.Tool{
+		Name:        "send_gmail_message",
+		Description: "Sends an email using the user's Gmail account. Supports both new emails and replies with optional attachments. Supports Gmail's \"Send As\" feature to send from configured alias addresses.",
+	}, func(sch *jsonschema.Schema) {
+		setEnum(sch, "body_format", "plain", "html")
+		if att := sch.Properties["attachments"]; att != nil {
+			att.Items = &jsonschema.Schema{
+				Type:                 "object",
+				AdditionalProperties: &jsonschema.Schema{Type: "string"},
+			}
 		}
-		to, err := request.RequireString("to")
-		if err != nil {
-			return mcp.NewToolResultError("to is required"), nil
-		}
-		subject, err := request.RequireString("subject")
-		if err != nil {
-			return mcp.NewToolResultError("subject is required"), nil
-		}
-		body, err := request.RequireString("body")
-		if err != nil {
-			return mcp.NewToolResultError("body is required"), nil
-		}
+	})
+	mcp.AddTool(s, tool, handleSendGmailMessage(getClient))
+}
 
-		bodyFormat := request.GetString("body_format", "plain")
-		ccAddr := request.GetString("cc", "")
-		bccAddr := request.GetString("bcc", "")
-		fromName := request.GetString("from_name", "")
-		fromEmail := request.GetString("from_email", "")
-		threadID := request.GetString("thread_id", "")
-		inReplyTo := request.GetString("in_reply_to", "")
-		references := request.GetString("references", "")
+func handleSendGmailMessage(getClient httpClientFunc) mcp.ToolHandlerFor[sendGmailMessageIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in sendGmailMessageIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		to := in.To
+		subject := in.Subject
+		body := in.Body
+
+		bodyFormat := in.BodyFormat
+		if bodyFormat == "" {
+			bodyFormat = "plain"
+		}
+		ccAddr := in.Cc
+		bccAddr := in.Bcc
+		fromName := in.FromName
+		fromEmail := in.FromEmail
+		threadID := in.ThreadID
+		inReplyTo := in.InReplyTo
+		references := in.References
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		sender := email
@@ -638,11 +653,11 @@ func handleSendGmailMessage(getClient httpClientFunc) mcpserver.ToolHandlerFunc 
 			subject = "Re: " + subject
 		}
 
-		attachments := getAttachments(request)
+		attachments := getAttachments(in.Attachments)
 
 		raw, err := buildRawMessage(sender, fromName, to, ccAddr, bccAddr, subject, body, bodyFormat, inReplyTo, references, attachments)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Error building message: %v", err)), nil
+			return nil, nil, toolErr("Error building message: %v", err)
 		}
 
 		msg := &gmail.Message{Raw: raw}
@@ -652,66 +667,73 @@ func handleSendGmailMessage(getClient httpClientFunc) mcpserver.ToolHandlerFunc 
 
 		sent, err := svc.Users.Messages.Send("me", msg).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Email sent successfully!\nMessage ID: %s", sent.Id)), nil
+		return textResult(fmt.Sprintf("Email sent successfully!\nMessage ID: %s", sent.Id))
 	}
 }
 
 // --- draft_gmail_message ---
 
-func registerDraftGmailMessage(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("draft_gmail_message",
-		mcp.WithDescription("Creates a draft email in the user's Gmail account. Supports both new drafts and reply drafts with optional attachments. Supports Gmail's \"Send As\" feature to draft from configured alias addresses."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("subject", mcp.Required(), mcp.Description("Email subject.")),
-		mcp.WithString("body", mcp.Required(), mcp.Description("Email body content (plain text or HTML).")),
-		mcp.WithString("to", mcp.Description("Recipient email address.")),
-		mcp.WithString("body_format", mcp.Description("Email body format."), mcp.Enum("plain", "html")),
-		mcp.WithString("cc", mcp.Description("CC email address.")),
-		mcp.WithString("bcc", mcp.Description("BCC email address.")),
-		mcp.WithString("from_name", mcp.Description("Sender display name for \"Name <email>\" formatting.")),
-		mcp.WithString("from_email", mcp.Description("\"Send As\" alias email (must be configured in Gmail settings).")),
-		mcp.WithString("thread_id", mcp.Description("Gmail thread ID to reply within.")),
-		mcp.WithString("in_reply_to", mcp.Description("Message-ID of message being replied to.")),
-		mcp.WithString("references", mcp.Description("Chain of Message-IDs for proper threading.")),
-		mcp.WithArray("attachments",
-			mcp.Description("Optional list of attachments. Each can have: 'path' (file path, auto-encodes), OR 'content' (standard base64, not urlsafe) + 'filename'. Optional 'mime_type' (auto-detected from path if not provided)."),
-			mcp.Items(map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}}),
-		),
-	)
-	s.AddTool(tool, handleDraftGmailMessage(getClient))
+// draftGmailMessageIn is the input schema for draft_gmail_message.
+type draftGmailMessageIn struct {
+	UserGoogleEmail string           `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	Subject         string           `json:"subject" jsonschema:"Email subject."`
+	Body            string           `json:"body" jsonschema:"Email body content (plain text or HTML)."`
+	To              string           `json:"to,omitempty" jsonschema:"Recipient email address."`
+	BodyFormat      string           `json:"body_format,omitempty" jsonschema:"Email body format."`
+	Cc              string           `json:"cc,omitempty" jsonschema:"CC email address."`
+	Bcc             string           `json:"bcc,omitempty" jsonschema:"BCC email address."`
+	FromName        string           `json:"from_name,omitempty" jsonschema:"Sender display name for \"Name <email>\" formatting."`
+	FromEmail       string           `json:"from_email,omitempty" jsonschema:"\"Send As\" alias email (must be configured in Gmail settings)."`
+	ThreadID        string           `json:"thread_id,omitempty" jsonschema:"Gmail thread ID to reply within."`
+	InReplyTo       string           `json:"in_reply_to,omitempty" jsonschema:"Message-ID of message being replied to."`
+	References      string           `json:"references,omitempty" jsonschema:"Chain of Message-IDs for proper threading."`
+	Attachments     []map[string]any `json:"attachments,omitempty" jsonschema:"Optional list of attachments. Each can have: 'path' (file path, auto-encodes), OR 'content' (standard base64, not urlsafe) + 'filename'. Optional 'mime_type' (auto-detected from path if not provided)."`
 }
 
-func handleDraftGmailMessage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+func registerDraftGmailMessage(s *mcp.Server, getClient httpClientFunc) {
+	tool := inputSchema[draftGmailMessageIn](&mcp.Tool{
+		Name:        "draft_gmail_message",
+		Description: "Creates a draft email in the user's Gmail account. Supports both new drafts and reply drafts with optional attachments. Supports Gmail's \"Send As\" feature to draft from configured alias addresses.",
+	}, func(sch *jsonschema.Schema) {
+		setEnum(sch, "body_format", "plain", "html")
+		if att := sch.Properties["attachments"]; att != nil {
+			att.Items = &jsonschema.Schema{
+				Type:                 "object",
+				AdditionalProperties: &jsonschema.Schema{Type: "string"},
+			}
 		}
-		subject, err := request.RequireString("subject")
-		if err != nil {
-			return mcp.NewToolResultError("subject is required"), nil
-		}
-		body, err := request.RequireString("body")
-		if err != nil {
-			return mcp.NewToolResultError("body is required"), nil
-		}
+	})
+	mcp.AddTool(s, tool, handleDraftGmailMessage(getClient))
+}
 
-		toAddr := request.GetString("to", "")
-		bodyFormat := request.GetString("body_format", "plain")
-		ccAddr := request.GetString("cc", "")
-		bccAddr := request.GetString("bcc", "")
-		fromName := request.GetString("from_name", "")
-		fromEmail := request.GetString("from_email", "")
-		threadID := request.GetString("thread_id", "")
-		inReplyTo := request.GetString("in_reply_to", "")
-		references := request.GetString("references", "")
+func handleDraftGmailMessage(getClient httpClientFunc) mcp.ToolHandlerFor[draftGmailMessageIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in draftGmailMessageIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		subject := in.Subject
+		body := in.Body
+
+		toAddr := in.To
+		bodyFormat := in.BodyFormat
+		if bodyFormat == "" {
+			bodyFormat = "plain"
+		}
+		ccAddr := in.Cc
+		bccAddr := in.Bcc
+		fromName := in.FromName
+		fromEmail := in.FromEmail
+		threadID := in.ThreadID
+		inReplyTo := in.InReplyTo
+		references := in.References
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		sender := email
@@ -723,11 +745,11 @@ func handleDraftGmailMessage(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 			subject = "Re: " + subject
 		}
 
-		attachments := getAttachments(request)
+		attachments := getAttachments(in.Attachments)
 
 		raw, err := buildRawMessage(sender, fromName, toAddr, ccAddr, bccAddr, subject, body, bodyFormat, inReplyTo, references, attachments)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Error building message: %v", err)), nil
+			return nil, nil, toolErr("Error building message: %v", err)
 		}
 
 		innerMsg := &gmail.Message{Raw: raw}
@@ -739,53 +761,65 @@ func handleDraftGmailMessage(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 
 		created, err := svc.Users.Drafts.Create("me", draft).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Draft created successfully!\nDraft ID: %s", created.Id)), nil
+		return textResult(fmt.Sprintf("Draft created successfully!\nDraft ID: %s", created.Id))
 	}
 }
 
 // --- manage_gmail_label ---
 
-func registerManageGmailLabel(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("manage_gmail_label",
-		mcp.WithDescription("Manages Gmail labels: create, update, or delete labels."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("action", mcp.Required(), mcp.Description("Action to perform."), mcp.Enum("create", "update", "delete")),
-		mcp.WithString("name", mcp.Description("Label name. Required for create, optional for update.")),
-		mcp.WithString("label_id", mcp.Description("Label ID. Required for update and delete.")),
-		mcp.WithString("label_list_visibility", mcp.Description("Show in label list."), mcp.Enum("labelShow", "labelHide")),
-		mcp.WithString("message_list_visibility", mcp.Description("Show in message list."), mcp.Enum("show", "hide")),
-	)
-	s.AddTool(tool, handleManageGmailLabel(getClient))
+// manageGmailLabelIn is the input schema for manage_gmail_label.
+type manageGmailLabelIn struct {
+	UserGoogleEmail       string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	Action                string `json:"action" jsonschema:"Action to perform."`
+	Name                  string `json:"name,omitempty" jsonschema:"Label name. Required for create, optional for update."`
+	LabelID               string `json:"label_id,omitempty" jsonschema:"Label ID. Required for update and delete."`
+	LabelListVisibility   string `json:"label_list_visibility,omitempty" jsonschema:"Show in label list."`
+	MessageListVisibility string `json:"message_list_visibility,omitempty" jsonschema:"Show in message list."`
 }
 
-func handleManageGmailLabel(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		action, err := request.RequireString("action")
-		if err != nil {
-			return mcp.NewToolResultError("action is required"), nil
-		}
+func registerManageGmailLabel(s *mcp.Server, getClient httpClientFunc) {
+	tool := inputSchema[manageGmailLabelIn](&mcp.Tool{
+		Name:        "manage_gmail_label",
+		Description: "Manages Gmail labels: create, update, or delete labels.",
+	}, func(sch *jsonschema.Schema) {
+		setEnum(sch, "action", "create", "update", "delete")
+		setEnum(sch, "label_list_visibility", "labelShow", "labelHide")
+		setEnum(sch, "message_list_visibility", "show", "hide")
+	})
+	mcp.AddTool(s, tool, handleManageGmailLabel(getClient))
+}
 
-		name := request.GetString("name", "")
-		labelID := request.GetString("label_id", "")
-		labelListVis := request.GetString("label_list_visibility", "labelShow")
-		msgListVis := request.GetString("message_list_visibility", "show")
+func handleManageGmailLabel(getClient httpClientFunc) mcp.ToolHandlerFor[manageGmailLabelIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in manageGmailLabelIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		action := in.Action
+
+		name := in.Name
+		labelID := in.LabelID
+		labelListVis := in.LabelListVisibility
+		if labelListVis == "" {
+			labelListVis = "labelShow"
+		}
+		msgListVis := in.MessageListVisibility
+		if msgListVis == "" {
+			msgListVis = "show"
+		}
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		switch action {
 		case "create":
 			if name == "" {
-				return mcp.NewToolResultError("name is required for create action"), nil
+				return nil, nil, toolErr("name is required for create action")
 			}
 			label := &gmail.Label{
 				Name:                  name,
@@ -794,17 +828,17 @@ func handleManageGmailLabel(getClient httpClientFunc) mcpserver.ToolHandlerFunc 
 			}
 			created, err := svc.Users.Labels.Create("me", label).Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+				return nil, nil, toolErr("Gmail API error: %v", err)
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("Label created successfully!\nName: %s\nID: %s", created.Name, created.Id)), nil
+			return textResult(fmt.Sprintf("Label created successfully!\nName: %s\nID: %s", created.Name, created.Id))
 
 		case "update":
 			if labelID == "" {
-				return mcp.NewToolResultError("label_id is required for update action"), nil
+				return nil, nil, toolErr("label_id is required for update action")
 			}
 			current, err := svc.Users.Labels.Get("me", labelID).Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Gmail API error fetching label: %v", err)), nil
+				return nil, nil, toolErr("Gmail API error fetching label: %v", err)
 			}
 			updateName := current.Name
 			if name != "" {
@@ -817,60 +851,65 @@ func handleManageGmailLabel(getClient httpClientFunc) mcpserver.ToolHandlerFunc 
 			}
 			updated, err := svc.Users.Labels.Update("me", labelID, label).Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+				return nil, nil, toolErr("Gmail API error: %v", err)
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("Label updated successfully!\nName: %s\nID: %s", updated.Name, updated.Id)), nil
+			return textResult(fmt.Sprintf("Label updated successfully!\nName: %s\nID: %s", updated.Name, updated.Id))
 
 		case "delete":
 			if labelID == "" {
-				return mcp.NewToolResultError("label_id is required for delete action"), nil
+				return nil, nil, toolErr("label_id is required for delete action")
 			}
 			current, err := svc.Users.Labels.Get("me", labelID).Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Gmail API error fetching label: %v", err)), nil
+				return nil, nil, toolErr("Gmail API error fetching label: %v", err)
 			}
 			err = svc.Users.Labels.Delete("me", labelID).Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+				return nil, nil, toolErr("Gmail API error: %v", err)
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("Label deleted successfully!\nName: %s\nID: %s", current.Name, current.Id)), nil
+			return textResult(fmt.Sprintf("Label deleted successfully!\nName: %s\nID: %s", current.Name, current.Id))
 
 		default:
-			return mcp.NewToolResultError(fmt.Sprintf("unknown action: %s", action)), nil
+			return nil, nil, toolErr("unknown action: %s", action)
 		}
 	}
 }
 
 // --- list_gmail_filters ---
 
-func registerListGmailFilters(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_gmail_filters",
-		mcp.WithDescription("Lists all Gmail filters configured in the user's mailbox."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-	)
-	s.AddTool(tool, handleListGmailFilters(getClient))
+// listGmailFiltersIn is the input schema for list_gmail_filters.
+type listGmailFiltersIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
 }
 
-func handleListGmailFilters(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerListGmailFilters(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "list_gmail_filters",
+		Description: "Lists all Gmail filters configured in the user's mailbox.",
+	}
+	mcp.AddTool(s, tool, handleListGmailFilters(getClient))
+}
+
+func handleListGmailFilters(getClient httpClientFunc) mcp.ToolHandlerFor[listGmailFiltersIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listGmailFiltersIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resp, err := svc.Users.Settings.Filters.List("me").Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
 		filters := resp.Filter
 		if len(filters) == 0 {
-			return mcp.NewToolResultText("No filters found."), nil
+			return textResult("No filters found.")
 		}
 
 		var b strings.Builder
@@ -921,42 +960,40 @@ func handleListGmailFilters(getClient httpClientFunc) mcpserver.ToolHandlerFunc 
 			}
 		}
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- create_gmail_filter ---
 
-func registerCreateGmailFilter(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_gmail_filter",
-		mcp.WithDescription("Creates a Gmail filter using the users.settings.filters API."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithObject("criteria", mcp.Required(), mcp.Description("Filter criteria object. Supports: from, to, subject, query, negatedQuery, hasAttachment, excludeChats, size, sizeComparison.")),
-		mcp.WithObject("action", mcp.Required(), mcp.Description("Filter action object. Supports: forward, addLabelIds, removeLabelIds.")),
-	)
-	s.AddTool(tool, handleCreateGmailFilter(getClient))
+// createGmailFilterIn is the input schema for create_gmail_filter.
+type createGmailFilterIn struct {
+	UserGoogleEmail string         `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	Criteria        map[string]any `json:"criteria" jsonschema:"Filter criteria object. Supports: from, to, subject, query, negatedQuery, hasAttachment, excludeChats, size, sizeComparison."`
+	Action          map[string]any `json:"action" jsonschema:"Filter action object. Supports: forward, addLabelIds, removeLabelIds."`
 }
 
-func handleCreateGmailFilter(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerCreateGmailFilter(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "create_gmail_filter",
+		Description: "Creates a Gmail filter using the users.settings.filters API.",
+	}
+	mcp.AddTool(s, tool, handleCreateGmailFilter(getClient))
+}
+
+func handleCreateGmailFilter(getClient httpClientFunc) mcp.ToolHandlerFor[createGmailFilterIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createGmailFilterIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
-		args := request.GetArguments()
-		criteriaRaw, ok := args["criteria"].(map[string]any)
-		if !ok {
-			return mcp.NewToolResultError("criteria is required and must be an object"), nil
-		}
-		actionRaw, ok := args["action"].(map[string]any)
-		if !ok {
-			return mcp.NewToolResultError("action is required and must be an object"), nil
-		}
+		criteriaRaw := in.Criteria
+		actionRaw := in.Action
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		criteria := &gmail.FilterCriteria{}
@@ -1014,49 +1051,51 @@ func handleCreateGmailFilter(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 
 		created, err := svc.Users.Settings.Filters.Create("me", filter).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Filter created successfully!\nFilter ID: %s", created.Id)), nil
+		return textResult(fmt.Sprintf("Filter created successfully!\nFilter ID: %s", created.Id))
 	}
 }
 
 // --- delete_gmail_filter ---
 
-func registerDeleteGmailFilter(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("delete_gmail_filter",
-		mcp.WithDescription("Deletes a Gmail filter by ID."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("filter_id", mcp.Required(), mcp.Description("ID of the filter to delete.")),
-	)
-	s.AddTool(tool, handleDeleteGmailFilter(getClient))
+// deleteGmailFilterIn is the input schema for delete_gmail_filter.
+type deleteGmailFilterIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	FilterID        string `json:"filter_id" jsonschema:"ID of the filter to delete."`
 }
 
-func handleDeleteGmailFilter(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerDeleteGmailFilter(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "delete_gmail_filter",
+		Description: "Deletes a Gmail filter by ID.",
+	}
+	mcp.AddTool(s, tool, handleDeleteGmailFilter(getClient))
+}
+
+func handleDeleteGmailFilter(getClient httpClientFunc) mcp.ToolHandlerFor[deleteGmailFilterIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteGmailFilterIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		filterID, err := request.RequireString("filter_id")
-		if err != nil {
-			return mcp.NewToolResultError("filter_id is required"), nil
-		}
+		filterID := in.FilterID
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Fetch filter details before deleting.
 		filter, err := svc.Users.Settings.Filters.Get("me", filterID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error fetching filter: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error fetching filter: %v", err)
 		}
 
 		err = svc.Users.Settings.Filters.Delete("me", filterID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
 		criteriaStr := "(none)"
@@ -1096,50 +1135,46 @@ func handleDeleteGmailFilter(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 			}
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Filter deleted successfully!\nFilter ID: %s\nCriteria: %s\nAction: %s", filterID, criteriaStr, actionStr)), nil
+		return textResult(fmt.Sprintf("Filter deleted successfully!\nFilter ID: %s\nCriteria: %s\nAction: %s", filterID, criteriaStr, actionStr))
 	}
 }
 
 // --- modify_gmail_message_labels ---
 
-func registerModifyGmailMessageLabels(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("modify_gmail_message_labels",
-		mcp.WithDescription("Adds or removes labels from a Gmail message. To archive an email, remove the INBOX label. To delete an email, add the TRASH label."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("message_id", mcp.Required(), mcp.Description("ID of the message to modify.")),
-		mcp.WithArray("add_label_ids",
-			mcp.Description("Label IDs to add."),
-			mcp.Items(map[string]any{"type": "string"}),
-		),
-		mcp.WithArray("remove_label_ids",
-			mcp.Description("Label IDs to remove."),
-			mcp.Items(map[string]any{"type": "string"}),
-		),
-	)
-	s.AddTool(tool, handleModifyGmailMessageLabels(getClient))
+// modifyGmailMessageLabelsIn is the input schema for modify_gmail_message_labels.
+type modifyGmailMessageLabelsIn struct {
+	UserGoogleEmail string   `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	MessageID       string   `json:"message_id" jsonschema:"ID of the message to modify."`
+	AddLabelIds     []string `json:"add_label_ids,omitempty" jsonschema:"Label IDs to add."`
+	RemoveLabelIds  []string `json:"remove_label_ids,omitempty" jsonschema:"Label IDs to remove."`
 }
 
-func handleModifyGmailMessageLabels(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		messageID, err := request.RequireString("message_id")
-		if err != nil {
-			return mcp.NewToolResultError("message_id is required"), nil
-		}
+func registerModifyGmailMessageLabels(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "modify_gmail_message_labels",
+		Description: "Adds or removes labels from a Gmail message. To archive an email, remove the INBOX label. To delete an email, add the TRASH label.",
+	}
+	mcp.AddTool(s, tool, handleModifyGmailMessageLabels(getClient))
+}
 
-		addLabels := getStringSlice(request, "add_label_ids")
-		removeLabels := getStringSlice(request, "remove_label_ids")
+func handleModifyGmailMessageLabels(getClient httpClientFunc) mcp.ToolHandlerFor[modifyGmailMessageLabelsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in modifyGmailMessageLabelsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		messageID := in.MessageID
+
+		addLabels := in.AddLabelIds
+		removeLabels := in.RemoveLabelIds
 
 		if len(addLabels) == 0 && len(removeLabels) == 0 {
-			return mcp.NewToolResultError("at least one of add_label_ids or remove_label_ids must be provided"), nil
+			return nil, nil, toolErr("at least one of add_label_ids or remove_label_ids must be provided")
 		}
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		modReq := &gmail.ModifyMessageRequest{}
@@ -1152,7 +1187,7 @@ func handleModifyGmailMessageLabels(getClient httpClientFunc) mcpserver.ToolHand
 
 		_, err = svc.Users.Messages.Modify("me", messageID, modReq).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
 		var b strings.Builder
@@ -1164,57 +1199,49 @@ func handleModifyGmailMessageLabels(getClient httpClientFunc) mcpserver.ToolHand
 			fmt.Fprintf(&b, "Removed: %s\n", strings.Join(removeLabels, ", "))
 		}
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- batch_modify_gmail_message_labels ---
 
-func registerBatchModifyGmailMessageLabels(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("batch_modify_gmail_message_labels",
-		mcp.WithDescription("Adds or removes labels from multiple Gmail messages in a single batch request."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithArray("message_ids",
-			mcp.Required(),
-			mcp.Description("List of message IDs to modify."),
-			mcp.Items(map[string]any{"type": "string"}),
-		),
-		mcp.WithArray("add_label_ids",
-			mcp.Description("Label IDs to add to messages."),
-			mcp.Items(map[string]any{"type": "string"}),
-		),
-		mcp.WithArray("remove_label_ids",
-			mcp.Description("Label IDs to remove from messages."),
-			mcp.Items(map[string]any{"type": "string"}),
-		),
-	)
-	s.AddTool(tool, handleBatchModifyGmailMessageLabels(getClient))
+// batchModifyGmailMessageLabelsIn is the input schema for batch_modify_gmail_message_labels.
+type batchModifyGmailMessageLabelsIn struct {
+	UserGoogleEmail string   `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	MessageIDs      []string `json:"message_ids" jsonschema:"List of message IDs to modify."`
+	AddLabelIds     []string `json:"add_label_ids,omitempty" jsonschema:"Label IDs to add to messages."`
+	RemoveLabelIds  []string `json:"remove_label_ids,omitempty" jsonschema:"Label IDs to remove from messages."`
 }
 
-func handleBatchModifyGmailMessageLabels(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerBatchModifyGmailMessageLabels(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "batch_modify_gmail_message_labels",
+		Description: "Adds or removes labels from multiple Gmail messages in a single batch request.",
+	}
+	mcp.AddTool(s, tool, handleBatchModifyGmailMessageLabels(getClient))
+}
+
+func handleBatchModifyGmailMessageLabels(getClient httpClientFunc) mcp.ToolHandlerFor[batchModifyGmailMessageLabelsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in batchModifyGmailMessageLabelsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		messageIDs, err := request.RequireStringSlice("message_ids")
-		if err != nil {
-			return mcp.NewToolResultError("message_ids is required"), nil
-		}
+		messageIDs := in.MessageIDs
 		if len(messageIDs) == 0 {
-			return mcp.NewToolResultError("message_ids must not be empty"), nil
+			return nil, nil, toolErr("message_ids must not be empty")
 		}
 
-		addLabels := getStringSlice(request, "add_label_ids")
-		removeLabels := getStringSlice(request, "remove_label_ids")
+		addLabels := in.AddLabelIds
+		removeLabels := in.RemoveLabelIds
 
 		if len(addLabels) == 0 && len(removeLabels) == 0 {
-			return mcp.NewToolResultError("at least one of add_label_ids or remove_label_ids must be provided"), nil
+			return nil, nil, toolErr("at least one of add_label_ids or remove_label_ids must be provided")
 		}
 
 		svc, err := newGmailService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		batchReq := &gmail.BatchModifyMessagesRequest{
@@ -1229,7 +1256,7 @@ func handleBatchModifyGmailMessageLabels(getClient httpClientFunc) mcpserver.Too
 
 		err = svc.Users.Messages.BatchModify("me", batchReq).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Gmail API error: %v", err)), nil
+			return nil, nil, toolErr("Gmail API error: %v", err)
 		}
 
 		var b strings.Builder
@@ -1241,7 +1268,7 @@ func handleBatchModifyGmailMessageLabels(getClient httpClientFunc) mcpserver.Too
 			fmt.Fprintf(&b, "Removed: %s\n", strings.Join(removeLabels, ", "))
 		}
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
@@ -1254,23 +1281,13 @@ type emailAttachment struct {
 	data     []byte
 }
 
-// getAttachments extracts attachment data from request params.
-func getAttachments(request mcp.CallToolRequest) []emailAttachment {
-	args := request.GetArguments()
-	raw, ok := args["attachments"]
-	if !ok || raw == nil {
-		return nil
-	}
-	arr, ok := raw.([]any)
-	if !ok || len(arr) == 0 {
+// getAttachments extracts attachment data from the typed attachments input.
+func getAttachments(arr []map[string]any) []emailAttachment {
+	if len(arr) == 0 {
 		return nil
 	}
 	var result []emailAttachment
-	for _, item := range arr {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
+	for _, m := range arr {
 		att := emailAttachment{}
 		mimeType, _ := m["mime_type"].(string)
 
@@ -1394,26 +1411,6 @@ func encodeSubject(subject string) string {
 		}
 	}
 	return subject
-}
-
-// getStringSlice extracts a []string from request params, returning nil if absent/empty.
-func getStringSlice(request mcp.CallToolRequest, key string) []string {
-	args := request.GetArguments()
-	raw, ok := args[key]
-	if !ok || raw == nil {
-		return nil
-	}
-	arr, ok := raw.([]any)
-	if !ok {
-		return nil
-	}
-	result := make([]string, 0, len(arr))
-	for _, v := range arr {
-		if s, ok := v.(string); ok {
-			result = append(result, s)
-		}
-	}
-	return result
 }
 
 // --- helper functions ---

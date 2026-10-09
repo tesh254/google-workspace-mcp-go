@@ -20,9 +20,9 @@ func TestDocsMockSearchDocs(t *testing.T) {
 			}`,
 		})
 		handler := handleSearchDocs(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"query":             "project",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "search_docs", searchDocsIn{
+			Query:           "project",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Found 2 Google Docs") {
 			t.Errorf("expected 'Found 2 Google Docs', got:\n%s", text)
@@ -40,9 +40,9 @@ func TestDocsMockSearchDocs(t *testing.T) {
 			"/drive/v3/files": `{"files":[]}`,
 		})
 		handler := handleSearchDocs(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"query":             "nonexistent",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "search_docs", searchDocsIn{
+			Query:           "nonexistent",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No Google Docs found") {
 			t.Errorf("expected 'No Google Docs found', got:\n%s", text)
@@ -67,10 +67,10 @@ func TestDocsMockCreateDoc(t *testing.T) {
 			},
 		})
 		handler := handleCreateDoc(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"title":             "My New Doc",
-			"content":           "Initial content here",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_doc", createDocIn{
+			Title:           "My New Doc",
+			Content:         "Initial content here",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Created Google Doc") {
 			t.Errorf("expected 'Created Google Doc', got:\n%s", text)
@@ -91,9 +91,9 @@ func TestDocsMockCreateDoc(t *testing.T) {
 			},
 		})
 		handler := handleCreateDoc(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"title":             "Empty Doc",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_doc", createDocIn{
+			Title:           "Empty Doc",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Created Google Doc") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -130,9 +130,9 @@ func TestDocsMockGetDocContent(t *testing.T) {
 			},
 		})
 		handler := handleGetDocContent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"document_id":       "doc001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_doc_content", getDocContentIn{
+			DocumentID:      "doc001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "My Document") {
 			t.Errorf("expected document name in output, got:\n%s", text)
@@ -153,9 +153,9 @@ func TestDocsMockGetDocContent(t *testing.T) {
 			},
 		})
 		handler := handleGetDocContent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"document_id":       "file001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_doc_content", getDocContentIn{
+			DocumentID:      "file001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "readme.txt") {
 			t.Errorf("expected file name in output, got:\n%s", text)
@@ -178,9 +178,9 @@ func TestDocsMockListDocsInFolder(t *testing.T) {
 			}`,
 		})
 		handler := handleListDocsInFolder(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"folder_id":         "folder001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_docs_in_folder", listDocsInFolderIn{
+			FolderID:        "folder001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Found 1 Docs") {
 			t.Errorf("expected 'Found 1 Docs', got:\n%s", text)
@@ -195,8 +195,8 @@ func TestDocsMockListDocsInFolder(t *testing.T) {
 			"/drive/v3/files": `{"files":[]}`,
 		})
 		handler := handleListDocsInFolder(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_docs_in_folder", listDocsInFolderIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No Google Docs found") {
 			t.Errorf("expected 'No Google Docs found', got:\n%s", text)
@@ -212,9 +212,9 @@ func TestDocsMockAPIError(t *testing.T) {
 			"/drive/v3/files": {code: 403, body: `{"error": {"code": 403, "message": "Forbidden"}}`},
 		})
 		handler := handleSearchDocs(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"query":             "test",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "search_docs", searchDocsIn{
+			Query:           "test",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Drive API error") {
 			t.Errorf("expected 'Drive API error', got:\n%s", text)
@@ -226,9 +226,9 @@ func TestDocsMockAPIError(t *testing.T) {
 			"/v1/documents": {code: 500, body: `{"error": {"code": 500, "message": "Internal Server Error"}}`},
 		})
 		handler := handleCreateDoc(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"title":             "Bad Doc",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "create_doc", createDocIn{
+			Title:           "Bad Doc",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Docs API error") {
 			t.Errorf("expected 'Docs API error', got:\n%s", text)

@@ -598,18 +598,18 @@ func TestDocsNormalizeColor(t *testing.T) {
 		wantB   float64
 	}{
 		{
-			name: "black",
-			hex:  "#000000",
+			name:  "black",
+			hex:   "#000000",
 			wantR: 0, wantG: 0, wantB: 0,
 		},
 		{
-			name: "white",
-			hex:  "#FFFFFF",
+			name:  "white",
+			hex:   "#FFFFFF",
 			wantR: 1, wantG: 1, wantB: 1,
 		},
 		{
-			name: "red",
-			hex:  "#FF0000",
+			name:  "red",
+			hex:   "#FF0000",
 			wantR: 1, wantG: 0, wantB: 0,
 		},
 		{

@@ -20,10 +20,10 @@ func TestFormsMockCreateForm(t *testing.T) {
 			},
 		})
 		handler := handleCreateForm(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"title":             "Customer Survey",
-			"description":       "A survey about satisfaction",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_form", createFormIn{
+			Title:           "Customer Survey",
+			Description:     "A survey about satisfaction",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully created form") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -67,9 +67,9 @@ func TestFormsMockGetForm(t *testing.T) {
 			},
 		})
 		handler := handleGetForm(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"form_id":           "form001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_form", getFormIn{
+			FormID:          "form001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Employee Feedback") {
 			t.Errorf("expected form title in output, got:\n%s", text)
@@ -88,22 +88,22 @@ func TestFormsMockListFormResponses(t *testing.T) {
 			"/v1/forms/form001/responses": map[string]any{
 				"responses": []map[string]any{
 					{
-						"responseId":      "resp001",
-						"createTime":      "2026-02-18T10:00:00Z",
+						"responseId":        "resp001",
+						"createTime":        "2026-02-18T10:00:00Z",
 						"lastSubmittedTime": "2026-02-18T10:00:00Z",
 					},
 					{
-						"responseId":      "resp002",
-						"createTime":      "2026-02-18T11:00:00Z",
+						"responseId":        "resp002",
+						"createTime":        "2026-02-18T11:00:00Z",
 						"lastSubmittedTime": "2026-02-18T11:00:00Z",
 					},
 				},
 			},
 		})
 		handler := handleListFormResponses(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"form_id":           "form001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_form_responses", listFormResponsesIn{
+			FormID:          "form001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "resp001") {
 			t.Errorf("expected response ID in output, got:\n%s", text)
@@ -115,9 +115,9 @@ func TestFormsMockListFormResponses(t *testing.T) {
 			"/v1/forms/form001/responses": map[string]any{},
 		})
 		handler := handleListFormResponses(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"form_id":           "form001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_form_responses", listFormResponsesIn{
+			FormID:          "form001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No responses") || !strings.Contains(text, "0 responses") {
 			// Either "No responses" or "0 responses" is acceptable
@@ -136,9 +136,9 @@ func TestFormsMockAPIError(t *testing.T) {
 			"/v1/forms": {code: 500, body: `{"error": {"code": 500, "message": "Internal Server Error"}}`},
 		})
 		handler := handleCreateForm(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"title":             "Bad Form",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "create_form", createFormIn{
+			Title:           "Bad Form",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "creating form") {
 			t.Errorf("expected form creation error, got:\n%s", text)
@@ -150,9 +150,9 @@ func TestFormsMockAPIError(t *testing.T) {
 			"/v1/forms/nonexistent": {code: 404, body: `{"error": {"code": 404, "message": "Not Found"}}`},
 		})
 		handler := handleGetForm(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"form_id":           "nonexistent",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "get_form", getFormIn{
+			FormID:          "nonexistent",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "getting form") {
 			t.Errorf("expected form get error, got:\n%s", text)

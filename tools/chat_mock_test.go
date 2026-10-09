@@ -20,8 +20,8 @@ func TestChatMockListSpaces(t *testing.T) {
 			},
 		})
 		handler := handleListSpaces(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_spaces", listSpacesIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Found 2 Chat spaces") {
 			t.Errorf("expected 'Found 2 Chat spaces', got:\n%s", text)
@@ -44,8 +44,8 @@ func TestChatMockListSpaces(t *testing.T) {
 			},
 		})
 		handler := handleListSpaces(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_spaces", listSpacesIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No Chat spaces found") {
 			t.Errorf("expected 'No Chat spaces found', got:\n%s", text)
@@ -68,10 +68,10 @@ func TestChatMockSendMessage(t *testing.T) {
 			},
 		})
 		handler := handleSendMessage(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"space_id":          "spaces/AAAA",
-			"message_text":      "Hello team!",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "send_message", sendMessageIn{
+			SpaceID:         "spaces/AAAA",
+			MessageText:     "Hello team!",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Message sent") {
 			t.Errorf("expected 'Message sent', got:\n%s", text)
@@ -90,8 +90,8 @@ func TestChatMockAPIError(t *testing.T) {
 			"/v1/spaces": {code: 403, body: `{"error": {"code": 403, "message": "Forbidden"}}`},
 		})
 		handler := handleListSpaces(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "list_spaces", listSpacesIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "listing spaces") {
 			t.Errorf("expected listing spaces error, got:\n%s", text)

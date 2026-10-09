@@ -30,8 +30,8 @@ func TestCalendarMockListCalendars(t *testing.T) {
 			},
 		})
 		handler := handleListCalendars(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_calendars", listCalendarsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully listed 2 calendars") {
 			t.Errorf("expected 2 calendars listed, got:\n%s", text)
@@ -57,8 +57,8 @@ func TestCalendarMockListCalendars(t *testing.T) {
 			},
 		})
 		handler := handleListCalendars(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_calendars", listCalendarsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No calendars found") {
 			t.Errorf("expected 'No calendars found', got:\n%s", text)
@@ -74,8 +74,8 @@ func TestCalendarMockListCalendars(t *testing.T) {
 			},
 		})
 		handler := handleListCalendars(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "list_calendars", listCalendarsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No Summary") {
 			t.Errorf("expected 'No Summary' fallback, got:\n%s", text)
@@ -91,27 +91,27 @@ func TestCalendarMockGetEvents(t *testing.T) {
 			"/calendar/v3/calendars/primary/events": map[string]any{
 				"items": []map[string]any{
 					{
-						"id":      "evt001",
-						"summary": "Team Standup",
-						"start":   map[string]any{"dateTime": "2026-02-18T09:00:00Z"},
-						"end":     map[string]any{"dateTime": "2026-02-18T09:30:00Z"},
+						"id":       "evt001",
+						"summary":  "Team Standup",
+						"start":    map[string]any{"dateTime": "2026-02-18T09:00:00Z"},
+						"end":      map[string]any{"dateTime": "2026-02-18T09:30:00Z"},
 						"htmlLink": "https://calendar.google.com/event?eid=evt001",
 					},
 					{
-						"id":      "evt002",
-						"summary": "Lunch Break",
-						"start":   map[string]any{"dateTime": "2026-02-18T12:00:00Z"},
-						"end":     map[string]any{"dateTime": "2026-02-18T13:00:00Z"},
+						"id":       "evt002",
+						"summary":  "Lunch Break",
+						"start":    map[string]any{"dateTime": "2026-02-18T12:00:00Z"},
+						"end":      map[string]any{"dateTime": "2026-02-18T13:00:00Z"},
 						"htmlLink": "https://calendar.google.com/event?eid=evt002",
 					},
 				},
 			},
 		})
 		handler := handleGetEvents(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"time_min":          "2026-02-18T00:00:00Z",
-			"time_max":          "2026-02-19T00:00:00Z",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_events", getEventsIn{
+			TimeMin:         "2026-02-18T00:00:00Z",
+			TimeMax:         "2026-02-19T00:00:00Z",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully retrieved 2 events") {
 			t.Errorf("expected 2 events, got:\n%s", text)
@@ -140,9 +140,9 @@ func TestCalendarMockGetEvents(t *testing.T) {
 			},
 		})
 		handler := handleGetEvents(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"event_id":          "evt001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_events", getEventsIn{
+			EventID:         "evt001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Important Meeting") {
 			t.Errorf("expected event summary in output, got:\n%s", text)
@@ -169,10 +169,10 @@ func TestCalendarMockGetEvents(t *testing.T) {
 			},
 		})
 		handler := handleGetEvents(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"event_id":          "evt001",
-			"detailed":          true,
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_events", getEventsIn{
+			EventID:         "evt001",
+			Detailed:        true,
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Event Details:") {
 			t.Errorf("expected detailed format, got:\n%s", text)
@@ -198,10 +198,10 @@ func TestCalendarMockGetEvents(t *testing.T) {
 			},
 		})
 		handler := handleGetEvents(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"time_min":          "2026-02-18T00:00:00Z",
-			"time_max":          "2026-02-18T01:00:00Z",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_events", getEventsIn{
+			TimeMin:         "2026-02-18T00:00:00Z",
+			TimeMax:         "2026-02-18T01:00:00Z",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "No events found") {
 			t.Errorf("expected 'No events found', got:\n%s", text)
@@ -213,20 +213,20 @@ func TestCalendarMockGetEvents(t *testing.T) {
 			"/calendar/v3/calendars/primary/events": map[string]any{
 				"items": []map[string]any{
 					{
-						"id":      "evt003",
-						"summary": "Company Holiday",
-						"start":   map[string]any{"date": "2026-02-20"},
-						"end":     map[string]any{"date": "2026-02-21"},
+						"id":       "evt003",
+						"summary":  "Company Holiday",
+						"start":    map[string]any{"date": "2026-02-20"},
+						"end":      map[string]any{"date": "2026-02-21"},
 						"htmlLink": "https://calendar.google.com/event?eid=evt003",
 					},
 				},
 			},
 		})
 		handler := handleGetEvents(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"time_min":          "2026-02-20",
-			"time_max":          "2026-02-22",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "get_events", getEventsIn{
+			TimeMin:         "2026-02-20",
+			TimeMax:         "2026-02-22",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Company Holiday") {
 			t.Errorf("expected event in output, got:\n%s", text)
@@ -249,11 +249,11 @@ func TestCalendarMockCreateEvent(t *testing.T) {
 			},
 		})
 		handler := handleCreateEvent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"summary":           "New Meeting",
-			"start_time":        "2026-02-20T10:00:00Z",
-			"end_time":          "2026-02-20T11:00:00Z",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_event", createEventIn{
+			Summary:         "New Meeting",
+			StartTime:       "2026-02-20T10:00:00Z",
+			EndTime:         "2026-02-20T11:00:00Z",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully created event") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -275,11 +275,11 @@ func TestCalendarMockCreateEvent(t *testing.T) {
 			},
 		})
 		handler := handleCreateEvent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"summary":           "Team Offsite",
-			"start_time":        "2026-03-01",
-			"end_time":          "2026-03-02",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_event", createEventIn{
+			Summary:         "Team Offsite",
+			StartTime:       "2026-03-01",
+			EndTime:         "2026-03-02",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully created event") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -298,14 +298,14 @@ func TestCalendarMockCreateEvent(t *testing.T) {
 			},
 		})
 		handler := handleCreateEvent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"summary":           "Planning Session",
-			"start_time":        "2026-02-25T14:00:00Z",
-			"end_time":          "2026-02-25T16:00:00Z",
-			"attendees":         []any{"alice@example.com", "bob@example.com"},
-			"description":       "Quarterly planning",
-			"location":          "Main Conference Room",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_event", createEventIn{
+			Summary:         "Planning Session",
+			StartTime:       "2026-02-25T14:00:00Z",
+			EndTime:         "2026-02-25T16:00:00Z",
+			Attendees:       []string{"alice@example.com", "bob@example.com"},
+			Description:     "Quarterly planning",
+			Location:        "Main Conference Room",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully created event") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -332,12 +332,12 @@ func TestCalendarMockCreateEvent(t *testing.T) {
 			},
 		})
 		handler := handleCreateEvent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"summary":           "Virtual Standup",
-			"start_time":        "2026-02-20T09:00:00Z",
-			"end_time":          "2026-02-20T09:15:00Z",
-			"add_google_meet":   true,
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "create_event", createEventIn{
+			Summary:         "Virtual Standup",
+			StartTime:       "2026-02-20T09:00:00Z",
+			EndTime:         "2026-02-20T09:15:00Z",
+			AddGoogleMeet:   true,
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully created event") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -347,19 +347,6 @@ func TestCalendarMockCreateEvent(t *testing.T) {
 		}
 		if !strings.Contains(text, "https://meet.google.com/abc-defg-hij") {
 			t.Errorf("expected Meet URL in output, got:\n%s", text)
-		}
-	})
-
-	t.Run("error_missing_summary", func(t *testing.T) {
-		ts := fakeAPIServer(t, map[string]any{})
-		handler := handleCreateEvent(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"start_time":        "2026-02-20T10:00:00Z",
-			"end_time":          "2026-02-20T11:00:00Z",
-			"user_google_email": "test@example.com",
-		})
-		if !strings.Contains(text, "summary is required") {
-			t.Errorf("expected 'summary is required', got:\n%s", text)
 		}
 	})
 }
@@ -392,10 +379,10 @@ func TestCalendarMockModifyEvent(t *testing.T) {
 			},
 		})
 		handler := handleModifyEvent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"event_id":          "evt001",
-			"summary":           "Updated Event",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "modify_event", modifyEventIn{
+			EventID:         "evt001",
+			Summary:         "Updated Event",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully modified event") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -429,30 +416,18 @@ func TestCalendarMockModifyEvent(t *testing.T) {
 			},
 		})
 		handler := handleModifyEvent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"event_id":          "evt002",
-			"start_time":        "2026-02-19T14:00:00Z",
-			"end_time":          "2026-02-19T15:00:00Z",
-			"location":          "Room 101",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "modify_event", modifyEventIn{
+			EventID:         "evt002",
+			StartTime:       "2026-02-19T14:00:00Z",
+			EndTime:         "2026-02-19T15:00:00Z",
+			Location:        "Room 101",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully modified event") {
 			t.Errorf("expected success message, got:\n%s", text)
 		}
 		if !strings.Contains(text, "Rescheduled Meeting") {
 			t.Errorf("expected event summary in output, got:\n%s", text)
-		}
-	})
-
-	t.Run("error_missing_event_id", func(t *testing.T) {
-		ts := fakeAPIServer(t, map[string]any{})
-		handler := handleModifyEvent(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"summary":           "Updated",
-			"user_google_email": "test@example.com",
-		})
-		if !strings.Contains(text, "event_id is required") {
-			t.Errorf("expected 'event_id is required', got:\n%s", text)
 		}
 	})
 }
@@ -477,9 +452,9 @@ func TestCalendarMockDeleteEvent(t *testing.T) {
 			},
 		})
 		handler := handleDeleteEvent(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"event_id":          "evt001",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "delete_event", deleteEventIn{
+			EventID:         "evt001",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Successfully deleted event") {
 			t.Errorf("expected success message, got:\n%s", text)
@@ -494,23 +469,12 @@ func TestCalendarMockDeleteEvent(t *testing.T) {
 			"/calendar/v3/calendars/primary/events/nonexistent": {code: 404, body: `{"error": {"code": 404, "message": "Not Found"}}`},
 		})
 		handler := handleDeleteEvent(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"event_id":          "nonexistent",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "delete_event", deleteEventIn{
+			EventID:         "nonexistent",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Event not found") {
 			t.Errorf("expected 'Event not found' error, got:\n%s", text)
-		}
-	})
-
-	t.Run("error_missing_event_id", func(t *testing.T) {
-		ts := fakeAPIServer(t, map[string]any{})
-		handler := handleDeleteEvent(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
-		})
-		if !strings.Contains(text, "event_id is required") {
-			t.Errorf("expected 'event_id is required', got:\n%s", text)
 		}
 	})
 }
@@ -534,10 +498,10 @@ func TestCalendarMockQueryFreebusy(t *testing.T) {
 			},
 		})
 		handler := handleQueryFreebusy(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"time_min":          "2026-02-18T00:00:00Z",
-			"time_max":          "2026-02-19T00:00:00Z",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "query_freebusy", queryFreebusyIn{
+			TimeMin:         "2026-02-18T00:00:00Z",
+			TimeMax:         "2026-02-19T00:00:00Z",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Free/Busy information") {
 			t.Errorf("expected free/busy header, got:\n%s", text)
@@ -563,25 +527,13 @@ func TestCalendarMockQueryFreebusy(t *testing.T) {
 			},
 		})
 		handler := handleQueryFreebusy(testClientFunc(ts))
-		text := callHandlerOK(t, handler, map[string]any{
-			"time_min":          "2026-02-18T00:00:00Z",
-			"time_max":          "2026-02-19T00:00:00Z",
-			"user_google_email": "test@example.com",
+		text := callHandlerOK(t, handler, "query_freebusy", queryFreebusyIn{
+			TimeMin:         "2026-02-18T00:00:00Z",
+			TimeMax:         "2026-02-19T00:00:00Z",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "Free (no busy periods)") {
 			t.Errorf("expected free status, got:\n%s", text)
-		}
-	})
-
-	t.Run("error_missing_time_min", func(t *testing.T) {
-		ts := fakeAPIServer(t, map[string]any{})
-		handler := handleQueryFreebusy(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"time_max":          "2026-02-19T00:00:00Z",
-			"user_google_email": "test@example.com",
-		})
-		if !strings.Contains(text, "time_min is required") {
-			t.Errorf("expected 'time_min is required', got:\n%s", text)
 		}
 	})
 }
@@ -594,8 +546,8 @@ func TestCalendarMockAPIError(t *testing.T) {
 			"/calendar/v3/users/me/calendarList": {code: 403, body: `{"error": {"code": 403, "message": "Forbidden"}}`},
 		})
 		handler := handleListCalendars(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "list_calendars", listCalendarsIn{
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "listing calendars") {
 			t.Errorf("expected calendar listing error, got:\n%s", text)
@@ -607,9 +559,9 @@ func TestCalendarMockAPIError(t *testing.T) {
 			"/calendar/v3/calendars/primary/events": {code: 500, body: `{"error": {"code": 500, "message": "Internal Server Error"}}`},
 		})
 		handler := handleGetEvents(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"time_min":          "2026-02-18T00:00:00Z",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "get_events", getEventsIn{
+			TimeMin:         "2026-02-18T00:00:00Z",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "listing events") {
 			t.Errorf("expected events listing error, got:\n%s", text)
@@ -621,11 +573,11 @@ func TestCalendarMockAPIError(t *testing.T) {
 			"/calendar/v3/calendars/primary/events": {code: 400, body: `{"error": {"code": 400, "message": "Bad Request"}}`},
 		})
 		handler := handleCreateEvent(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"summary":           "Bad Event",
-			"start_time":        "invalid-time",
-			"end_time":          "invalid-time",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "create_event", createEventIn{
+			Summary:         "Bad Event",
+			StartTime:       "invalid-time",
+			EndTime:         "invalid-time",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "creating event") {
 			t.Errorf("expected creating event error, got:\n%s", text)
@@ -637,10 +589,10 @@ func TestCalendarMockAPIError(t *testing.T) {
 			"/calendar/v3/calendars/primary/events/missing": {code: 404, body: `{"error": {"code": 404, "message": "Not Found"}}`},
 		})
 		handler := handleModifyEvent(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"event_id":          "missing",
-			"summary":           "Updated",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "modify_event", modifyEventIn{
+			EventID:         "missing",
+			Summary:         "Updated",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "event not found") {
 			t.Errorf("expected event not found error, got:\n%s", text)
@@ -652,10 +604,10 @@ func TestCalendarMockAPIError(t *testing.T) {
 			"/calendar/v3/freeBusy": {code: 500, body: `{"error": {"code": 500, "message": "Internal Server Error"}}`},
 		})
 		handler := handleQueryFreebusy(testClientFunc(ts))
-		text := callHandlerErr(t, handler, map[string]any{
-			"time_min":          "2026-02-18T00:00:00Z",
-			"time_max":          "2026-02-19T00:00:00Z",
-			"user_google_email": "test@example.com",
+		text := callHandlerErr(t, handler, "query_freebusy", queryFreebusyIn{
+			TimeMin:         "2026-02-18T00:00:00Z",
+			TimeMax:         "2026-02-19T00:00:00Z",
+			UserGoogleEmail: "test@example.com",
 		})
 		if !strings.Contains(text, "querying free/busy") {
 			t.Errorf("expected freebusy error, got:\n%s", text)

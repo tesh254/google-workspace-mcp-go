@@ -8,8 +8,8 @@ import (
 // --- start_google_auth ---
 
 func TestAuthHandlerStartGoogleAuthMissingServiceName(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "start_google_auth", nil)
+	cs := newToolTestSession(t)
+	text, isError := callTool(t, cs, "start_google_auth", nil)
 	if !isError {
 		t.Fatal("expected isError=true")
 	}

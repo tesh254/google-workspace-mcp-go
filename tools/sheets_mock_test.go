@@ -5,22 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	mcpserver "github.com/mark3labs/mcp-go/server"
 )
-
-// sheetsTestServer creates an MCP server with specific Sheets tools registered,
-// backed by the given fake HTTP server.
-func sheetsTestServer(t *testing.T, registerFuncs []func(s *mcpserver.MCPServer, getClient httpClientFunc), getClient httpClientFunc) *mcpserver.MCPServer {
-	t.Helper()
-	t.Setenv("USER_GOOGLE_EMAIL", "test@example.com")
-	t.Setenv("WORKSPACE_MCP_CREDENTIALS_DIR", t.TempDir())
-	s := mcpserver.NewMCPServer("test", "0.0.0")
-	for _, reg := range registerFuncs {
-		reg(s, getClient)
-	}
-	return s
-}
 
 // --- list_spreadsheets ---
 
@@ -34,13 +19,10 @@ func TestSheetsMockListSpreadsheets(t *testing.T) {
 				]
 			}`,
 		})
-		s := sheetsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerListSpreadsheets}, testClientFunc(ts))
-		text, isError := callTool(t, s, "list_spreadsheets", map[string]any{
-			"user_google_email": "test@example.com",
+		handler := handleListSpreadsheets(testClientFunc(ts))
+		text := callHandlerOK(t, handler, "list_spreadsheets", listSpreadsheetsIn{
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "Successfully listed 2 spreadsheets") {
 			t.Errorf("expected 2 spreadsheets listed, got:\n%s", text)
 		}
@@ -56,13 +38,10 @@ func TestSheetsMockListSpreadsheets(t *testing.T) {
 		ts := fakeAPIServer(t, map[string]any{
 			"/drive/v3/files": `{"files":[]}`,
 		})
-		s := sheetsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerListSpreadsheets}, testClientFunc(ts))
-		text, isError := callTool(t, s, "list_spreadsheets", map[string]any{
-			"user_google_email": "test@example.com",
+		handler := handleListSpreadsheets(testClientFunc(ts))
+		text := callHandlerOK(t, handler, "list_spreadsheets", listSpreadsheetsIn{
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "No spreadsheets found") {
 			t.Errorf("expected 'No spreadsheets found', got:\n%s", text)
 		}
@@ -83,14 +62,11 @@ func TestSheetsMockCreateSpreadsheet(t *testing.T) {
 				},
 			},
 		})
-		s := sheetsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerCreateSpreadsheet}, testClientFunc(ts))
-		text, isError := callTool(t, s, "create_spreadsheet", map[string]any{
-			"title":             "New Budget",
-			"user_google_email": "test@example.com",
+		handler := handleCreateSpreadsheet(testClientFunc(ts))
+		text := callHandlerOK(t, handler, "create_spreadsheet", createSpreadsheetIn{
+			Title:           "New Budget",
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "Successfully created spreadsheet") {
 			t.Errorf("expected success message, got:\n%s", text)
 		}
@@ -138,14 +114,11 @@ func TestSheetsMockGetSpreadsheetInfo(t *testing.T) {
 				},
 			},
 		})
-		s := sheetsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerGetSpreadsheetInfo}, testClientFunc(ts))
-		text, isError := callTool(t, s, "get_spreadsheet_info", map[string]any{
-			"spreadsheet_id":    "ss001",
-			"user_google_email": "test@example.com",
+		handler := handleGetSpreadsheetInfo(testClientFunc(ts))
+		text := callHandlerOK(t, handler, "get_spreadsheet_info", getSpreadsheetInfoIn{
+			SpreadsheetID:   "ss001",
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "Sales Report") {
 			t.Errorf("expected spreadsheet title in output, got:\n%s", text)
 		}
@@ -175,15 +148,12 @@ func TestSheetsMockReadSheetValues(t *testing.T) {
 				},
 			},
 		})
-		s := sheetsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerReadSheetValues}, testClientFunc(ts))
-		text, isError := callTool(t, s, "read_sheet_values", map[string]any{
-			"spreadsheet_id":    "ss001",
-			"range_name":        "Sheet1!A1:C3",
-			"user_google_email": "test@example.com",
+		handler := handleReadSheetValues(testClientFunc(ts))
+		text := callHandlerOK(t, handler, "read_sheet_values", readSheetValuesIn{
+			SpreadsheetID:   "ss001",
+			RangeName:       "Sheet1!A1:C3",
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "Successfully read") {
 			t.Errorf("expected success message, got:\n%s", text)
 		}
@@ -198,15 +168,12 @@ func TestSheetsMockReadSheetValues(t *testing.T) {
 				"range": "Sheet1!A1:C3",
 			},
 		})
-		s := sheetsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerReadSheetValues}, testClientFunc(ts))
-		text, isError := callTool(t, s, "read_sheet_values", map[string]any{
-			"spreadsheet_id":    "ss001",
-			"range_name":        "Sheet1!A1:C3",
-			"user_google_email": "test@example.com",
+		handler := handleReadSheetValues(testClientFunc(ts))
+		text := callHandlerOK(t, handler, "read_sheet_values", readSheetValuesIn{
+			SpreadsheetID:   "ss001",
+			RangeName:       "Sheet1!A1:C3",
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "No data found") {
 			t.Errorf("expected 'No data found', got:\n%s", text)
 		}
@@ -223,16 +190,13 @@ func TestSheetsMockModifySheetValues(t *testing.T) {
 				fmt.Fprint(w, `{"updatedRange":"Sheet1!A1:B2","updatedRows":2,"updatedColumns":2,"updatedCells":4}`)
 			},
 		})
-		s := sheetsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerModifySheetValues}, testClientFunc(ts))
-		text, isError := callTool(t, s, "modify_sheet_values", map[string]any{
-			"spreadsheet_id":    "ss001",
-			"range_name":        "Sheet1!A1:B2",
-			"values":            []any{[]any{"a", "b"}, []any{"c", "d"}},
-			"user_google_email": "test@example.com",
+		handler := handleModifySheetValues(testClientFunc(ts))
+		text := callHandlerOK(t, handler, "modify_sheet_values", modifySheetValuesIn{
+			SpreadsheetID:   "ss001",
+			RangeName:       "Sheet1!A1:B2",
+			Values:          []any{[]any{"a", "b"}, []any{"c", "d"}},
+			UserGoogleEmail: "test@example.com",
 		})
-		if isError {
-			t.Fatalf("unexpected error: %s", text)
-		}
 		if !strings.Contains(text, "Updated") || !strings.Contains(text, "cells") {
 			t.Errorf("expected update confirmation, got:\n%s", text)
 		}
@@ -246,14 +210,11 @@ func TestSheetsMockAPIError(t *testing.T) {
 		ts := fakeAPIServerWithStatus(t, map[string]statusResponse{
 			"/v4/spreadsheets/ss001": {code: 404, body: `{"error": {"code": 404, "message": "Not Found"}}`},
 		})
-		s := sheetsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerGetSpreadsheetInfo}, testClientFunc(ts))
-		text, isError := callTool(t, s, "get_spreadsheet_info", map[string]any{
-			"spreadsheet_id":    "ss001",
-			"user_google_email": "test@example.com",
+		handler := handleGetSpreadsheetInfo(testClientFunc(ts))
+		text := callHandlerErr(t, handler, "get_spreadsheet_info", getSpreadsheetInfoIn{
+			SpreadsheetID:   "ss001",
+			UserGoogleEmail: "test@example.com",
 		})
-		if !isError {
-			t.Fatalf("expected error, got success: %s", text)
-		}
 		if !strings.Contains(text, "getting spreadsheet info") {
 			t.Errorf("expected error about getting spreadsheet info, got:\n%s", text)
 		}
@@ -263,14 +224,11 @@ func TestSheetsMockAPIError(t *testing.T) {
 		ts := fakeAPIServerWithStatus(t, map[string]statusResponse{
 			"/v4/spreadsheets": {code: 500, body: `{"error": {"code": 500, "message": "Internal Server Error"}}`},
 		})
-		s := sheetsTestServer(t, []func(*mcpserver.MCPServer, httpClientFunc){registerCreateSpreadsheet}, testClientFunc(ts))
-		text, isError := callTool(t, s, "create_spreadsheet", map[string]any{
-			"title":             "Bad Sheet",
-			"user_google_email": "test@example.com",
+		handler := handleCreateSpreadsheet(testClientFunc(ts))
+		text := callHandlerErr(t, handler, "create_spreadsheet", createSpreadsheetIn{
+			Title:           "Bad Sheet",
+			UserGoogleEmail: "test@example.com",
 		})
-		if !isError {
-			t.Fatalf("expected error, got success: %s", text)
-		}
 		if !strings.Contains(text, "creating spreadsheet") {
 			t.Errorf("expected error about creating spreadsheet, got:\n%s", text)
 		}

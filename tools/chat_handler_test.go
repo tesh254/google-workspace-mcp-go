@@ -1,102 +1,86 @@
 package tools
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/magks/google-workspace-mcp-go/internal/google"
 )
+
+// chatTestGetClient wires a real credential store backed by an empty temp
+// directory (no stored credentials) plus a fixed user email env var, matching
+// the previous newToolTestServer environment: every handler call using it
+// fails at authentication.
+func chatTestGetClient(t *testing.T) httpClientFunc {
+	t.Helper()
+	t.Setenv("WORKSPACE_MCP_CREDENTIALS_DIR", t.TempDir())
+	t.Setenv("USER_GOOGLE_EMAIL", "test@example.com")
+	return clientFuncFromCache(google.DefaultClientCache())
+}
+
+// chatCallReq builds a minimal CallToolRequest for direct handler invocation.
+func chatCallReq(name string) *mcp.CallToolRequest {
+	return &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: name}}
+}
 
 // --- list_spaces ---
 // list_spaces has no strictly required params (email resolved via env),
 // so the first error path is auth failure.
 
 func TestChatHandlerListSpacesAuthFailure(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "list_spaces", nil)
-	if !isError {
-		t.Fatal("expected isError=true for auth failure")
+	getClient := chatTestGetClient(t)
+	handler := handleListSpaces(getClient)
+	_, _, err := handler(context.Background(), chatCallReq("list_spaces"), listSpacesIn{})
+	if err == nil {
+		t.Fatal("expected error for auth failure")
 	}
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(err.Error())
 	if !strings.Contains(lower, "credentials") && !strings.Contains(lower, "authenticating") && !strings.Contains(lower, "authentication") && !strings.Contains(lower, "token") {
-		t.Errorf("expected error about credentials/auth, got %q", text)
+		t.Errorf("expected error about credentials/auth, got %q", err.Error())
 	}
 }
 
 // --- get_messages ---
-
-func TestChatHandlerGetMessagesMissingSpaceID(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "get_messages", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "space_id") {
-		t.Errorf("expected error mentioning 'space_id', got %q", text)
-	}
-}
+// Required-argument error paths are now enforced by the SDK's input schema,
+// so the missing-space_id test is dropped.
 
 func TestChatHandlerGetMessagesAuthFailure(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "get_messages", map[string]any{
-		"space_id": "spaces/abc123",
+	getClient := chatTestGetClient(t)
+	handler := handleGetMessages(getClient)
+	_, _, err := handler(context.Background(), chatCallReq("get_messages"), getMessagesIn{
+		SpaceID: "spaces/abc123",
 	})
-	if !isError {
-		t.Fatal("expected isError=true for auth failure")
+	if err == nil {
+		t.Fatal("expected error for auth failure")
 	}
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(err.Error())
 	if !strings.Contains(lower, "credentials") && !strings.Contains(lower, "authenticating") && !strings.Contains(lower, "authentication") && !strings.Contains(lower, "token") {
-		t.Errorf("expected error about credentials/auth, got %q", text)
+		t.Errorf("expected error about credentials/auth, got %q", err.Error())
 	}
 }
 
 // --- send_message ---
-
-func TestChatHandlerSendMessageMissingSpaceID(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "send_message", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "space_id") {
-		t.Errorf("expected error mentioning 'space_id', got %q", text)
-	}
-}
-
-func TestChatHandlerSendMessageMissingMessageText(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "send_message", map[string]any{
-		"space_id": "spaces/abc123",
-	})
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "message_text") {
-		t.Errorf("expected error mentioning 'message_text', got %q", text)
-	}
-}
+// Required-argument error paths are now enforced by the SDK's input schema,
+// so the missing-space_id and missing-message_text tests are dropped.
 
 // --- search_messages ---
-
-func TestChatHandlerSearchMessagesMissingQuery(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "search_messages", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "query") {
-		t.Errorf("expected error mentioning 'query', got %q", text)
-	}
-}
+// Required-argument error paths are now enforced by the SDK's input schema,
+// so the missing-query test is dropped.
 
 func TestChatHandlerSearchMessagesAuthFailure(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "search_messages", map[string]any{
-		"query": "test message",
+	getClient := chatTestGetClient(t)
+	handler := handleSearchMessages(getClient)
+	_, _, err := handler(context.Background(), chatCallReq("search_messages"), searchMessagesIn{
+		Query: "test message",
 	})
-	if !isError {
-		t.Fatal("expected isError=true for auth failure")
+	if err == nil {
+		t.Fatal("expected error for auth failure")
 	}
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(err.Error())
 	if !strings.Contains(lower, "credentials") && !strings.Contains(lower, "authenticating") && !strings.Contains(lower, "authentication") && !strings.Contains(lower, "token") {
-		t.Errorf("expected error about credentials/auth, got %q", text)
+		t.Errorf("expected error about credentials/auth, got %q", err.Error())
 	}
 }

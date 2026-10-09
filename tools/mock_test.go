@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // urlRewriteTransport is an http.RoundTripper that redirects all HTTP
@@ -86,29 +86,26 @@ func TestMockSearchGmailMessages(t *testing.T) {
 	// Create the handler directly via handleSearchGmailMessages + testClientFunc.
 	handler := handleSearchGmailMessages(testClientFunc(ts))
 
-	// Build a CallToolRequest with the required "query" argument.
-	req := mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "search_gmail_messages",
-			Arguments: map[string]any{
-				"query":              "in:inbox",
-				"user_google_email":  "test@example.com",
-			},
-		},
+	// Build a typed input matching the "query" argument the old request carried.
+	in := searchGmailMessagesIn{
+		Query:           "in:inbox",
+		UserGoogleEmail: "test@example.com",
 	}
 
-	result, err := handler(context.Background(), req)
+	result, _, err := handler(context.Background(), &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{Name: "search_gmail_messages"},
+	}, in)
 	if err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
 	if result.IsError {
-		tc := result.Content[0].(mcp.TextContent)
+		tc := result.Content[0].(*mcp.TextContent)
 		t.Fatalf("handler returned tool error: %s", tc.Text)
 	}
 	if len(result.Content) == 0 {
 		t.Fatal("handler returned empty content")
 	}
-	tc, ok := result.Content[0].(mcp.TextContent)
+	tc, ok := result.Content[0].(*mcp.TextContent)
 	if !ok {
 		t.Fatalf("expected TextContent, got %T", result.Content[0])
 	}

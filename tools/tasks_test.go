@@ -33,8 +33,8 @@ func TestTasksOrNA(t *testing.T) {
 
 func TestTasksAdjustDueMaxForTasksAPI(t *testing.T) {
 	tests := []struct {
-		name string
-		input string
+		name         string
+		input        string
 		wantContains string
 		wantExact    string
 	}{

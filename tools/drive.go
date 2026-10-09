@@ -8,8 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	drive "google.golang.org/api/drive/v3"
 	"google.golang.org/api/googleapi"
 
@@ -35,7 +34,7 @@ var driveQueryPatterns = []*regexp.Regexp{
 const driveFileFields = "nextPageToken, files(id, name, mimeType, webViewLink, iconLink, modifiedTime, size)"
 
 // RegisterDriveTools registers all Drive tools with the MCP server.
-func RegisterDriveTools(s *mcpserver.MCPServer, _ server.Config) {
+func RegisterDriveTools(s *mcp.Server, _ server.Config) {
 	getClient := clientFuncFromCache(google.DefaultClientCache())
 
 	// Read tools (US-010)
@@ -130,37 +129,45 @@ func formatDriveFileList(files []*drive.File, header string) string {
 
 // --- search_drive_files ---
 
-func registerSearchDriveFiles(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("search_drive_files",
-		mcp.WithDescription("Searches for files and folders within a user's Google Drive, including shared drives."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("query", mcp.Required(), mcp.Description("The search query string. Supports Google Drive search operators.")),
-		mcp.WithNumber("page_size", mcp.Description("The maximum number of files to return. Defaults to 10.")),
-		mcp.WithString("drive_id", mcp.Description("ID of the shared drive to search. If None, behavior depends on `corpora` and `include_items_from_all_drives`.")),
-		mcp.WithBoolean("include_items_from_all_drives", mcp.Description("Whether shared drive items should be included in results. Defaults to True.")),
-		mcp.WithString("corpora", mcp.Description("Bodies of items to query (e.g., 'user', 'domain', 'drive', 'allDrives').")),
-	)
-	s.AddTool(tool, handleSearchDriveFiles(getClient))
+func registerSearchDriveFiles(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "search_drive_files",
+		Description: "Searches for files and folders within a user's Google Drive, including shared drives.",
+	}
+	mcp.AddTool(s, tool, handleSearchDriveFiles(getClient))
 }
 
-func handleSearchDriveFiles(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// searchDriveFilesIn is the input schema for search_drive_files.
+type searchDriveFilesIn struct {
+	UserGoogleEmail           string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	Query                     string `json:"query" jsonschema:"The search query string. Supports Google Drive search operators."`
+	PageSize                  int    `json:"page_size,omitempty" jsonschema:"The maximum number of files to return. Defaults to 10."`
+	DriveID                   string "json:\"drive_id,omitempty\" jsonschema:\"ID of the shared drive to search. If None, behavior depends on `corpora` and `include_items_from_all_drives`.\""
+	IncludeItemsFromAllDrives *bool  `json:"include_items_from_all_drives,omitempty" jsonschema:"Whether shared drive items should be included in results. Defaults to True."`
+	Corpora                   string `json:"corpora,omitempty" jsonschema:"Bodies of items to query (e.g., 'user', 'domain', 'drive', 'allDrives')."`
+}
+
+func handleSearchDriveFiles(getClient httpClientFunc) mcp.ToolHandlerFor[searchDriveFilesIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchDriveFilesIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		query, err := request.RequireString("query")
-		if err != nil {
-			return mcp.NewToolResultError("query is required"), nil
+		query := in.Query
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 10
 		}
-		pageSize := request.GetInt("page_size", 10)
-		driveID := request.GetString("drive_id", "")
-		includeAllDrives := getBool(request, "include_items_from_all_drives", true)
-		corpora := request.GetString("corpora", "")
+		driveID := in.DriveID
+		includeAllDrives := true
+		if in.IncludeItemsFromAllDrives != nil {
+			includeAllDrives = *in.IncludeItemsFromAllDrives
+		}
+		corpora := in.Corpora
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// If query is free text (not structured), wrap in fullText contains.
@@ -172,49 +179,51 @@ func handleSearchDriveFiles(getClient httpClientFunc) mcpserver.ToolHandlerFunc 
 
 		resp, err := buildDriveListCall(svc, finalQuery, int64(pageSize), driveID, includeAllDrives, corpora).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		if len(resp.Files) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No files found for '%s'.", query)), nil
+			return textResult(fmt.Sprintf("No files found for '%s'.", query))
 		}
 
 		header := fmt.Sprintf("Found %d files for %s matching '%s':", len(resp.Files), email, query)
-		return mcp.NewToolResultText(formatDriveFileList(resp.Files, header)), nil
+		return textResult(formatDriveFileList(resp.Files, header))
 	}
 }
 
 // --- get_drive_file_content ---
 
-func registerGetDriveFileContent(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_drive_file_content",
-		mcp.WithDescription("Retrieves the content of a specific Google Drive file by ID, supporting files in shared drives.\n\n• Native Google Docs, Sheets, Slides → exported as text / CSV.\n• Any other file → downloaded; tries UTF-8 decode, else notes binary."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("Drive file ID.")),
-	)
-	s.AddTool(tool, handleGetDriveFileContent(getClient))
+func registerGetDriveFileContent(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_drive_file_content",
+		Description: "Retrieves the content of a specific Google Drive file by ID, supporting files in shared drives.\n\n• Native Google Docs, Sheets, Slides → exported as text / CSV.\n• Any other file → downloaded; tries UTF-8 decode, else notes binary.",
+	}
+	mcp.AddTool(s, tool, handleGetDriveFileContent(getClient))
 }
 
-func handleGetDriveFileContent(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// getDriveFileContentIn is the input schema for get_drive_file_content.
+type getDriveFileContentIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	FileID          string `json:"file_id" jsonschema:"Drive file ID."`
+}
+
+func handleGetDriveFileContent(getClient httpClientFunc) mcp.ToolHandlerFor[getDriveFileContentIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getDriveFileContentIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
-		}
+		fileID := in.FileID
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Resolve shortcuts and get metadata.
 		resolvedID, meta, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 
@@ -231,22 +240,22 @@ func handleGetDriveFileContent(getClient httpClientFunc) mcpserver.ToolHandlerFu
 		if exportMIME != "" {
 			resp, err := svc.Files.Export(fileID, exportMIME).Download()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Drive API export error: %v", err)), nil
+				return nil, nil, toolErr("Drive API export error: %v", err)
 			}
 			defer resp.Body.Close()
 			data, err = io.ReadAll(resp.Body)
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("reading export: %v", err)), nil
+				return nil, nil, toolErr("reading export: %v", err)
 			}
 		} else {
 			resp, err := svc.Files.Get(fileID).SupportsAllDrives(true).Download()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Drive API download error: %v", err)), nil
+				return nil, nil, toolErr("Drive API download error: %v", err)
 			}
 			defer resp.Body.Close()
 			data, err = io.ReadAll(resp.Body)
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("reading download: %v", err)), nil
+				return nil, nil, toolErr("reading download: %v", err)
 			}
 		}
 
@@ -261,42 +270,49 @@ func handleGetDriveFileContent(getClient httpClientFunc) mcpserver.ToolHandlerFu
 		header := fmt.Sprintf("File: \"%s\" (ID: %s, Type: %s)\nLink: %s\n\n--- CONTENT ---\n",
 			fileName, fileID, mimeType, link)
 
-		return mcp.NewToolResultText(header + bodyText), nil
+		return textResult(header + bodyText)
 	}
 }
 
 // --- get_drive_file_download_url ---
 
-func registerGetDriveFileDownloadURL(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_drive_file_download_url",
-		mcp.WithDescription("Gets a download URL for a Google Drive file. The file is prepared and made available via HTTP URL.\n\nFor Google native files (Docs, Sheets, Slides), exports to a useful format:\n• Google Docs → PDF (default) or DOCX if export_format='docx'\n• Google Sheets → XLSX (default), PDF if export_format='pdf', or CSV if export_format='csv'\n• Google Slides → PDF (default) or PPTX if export_format='pptx'\n\nFor other files, downloads the original file format."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("The Google Drive file ID to get a download URL for.")),
-		mcp.WithString("export_format", mcp.Description("Optional export format for Google native files. Options: 'pdf', 'docx', 'xlsx', 'csv', 'pptx'.")),
-	)
-	s.AddTool(tool, handleGetDriveFileDownloadURL(getClient))
+func registerGetDriveFileDownloadURL(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name: "get_drive_file_download_url",
+		Description: "Gets a download URL for a Google Drive file. The file is prepared and made available via HTTP URL.\n\n" +
+			"For Google native files (Docs, Sheets, Slides), exports to a useful format:\n" +
+			"• Google Docs → PDF (default) or DOCX if export_format='docx'\n" +
+			"• Google Sheets → XLSX (default), PDF if export_format='pdf', or CSV if export_format='csv'\n" +
+			"• Google Slides → PDF (default) or PPTX if export_format='pptx'\n\n" +
+			"For other files, downloads the original file format.",
+	}
+	mcp.AddTool(s, tool, handleGetDriveFileDownloadURL(getClient))
 }
 
-func handleGetDriveFileDownloadURL(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// getDriveFileDownloadURLIn is the input schema for get_drive_file_download_url.
+type getDriveFileDownloadURLIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileID          string `json:"file_id" jsonschema:"The Google Drive file ID to get a download URL for."`
+	ExportFormat    string `json:"export_format,omitempty" jsonschema:"Optional export format for Google native files. Options: 'pdf', 'docx', 'xlsx', 'csv', 'pptx'."`
+}
+
+func handleGetDriveFileDownloadURL(getClient httpClientFunc) mcp.ToolHandlerFor[getDriveFileDownloadURLIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getDriveFileDownloadURLIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
-		}
-		exportFormat := request.GetString("export_format", "")
+		fileID := in.FileID
+		exportFormat := in.ExportFormat
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedID, meta, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 		mimeType := meta.MimeType
@@ -312,23 +328,23 @@ func handleGetDriveFileDownloadURL(getClient httpClientFunc) mcpserver.ToolHandl
 		if exportMIME != "" {
 			resp, err := svc.Files.Export(fileID, exportMIME).Download()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Drive API export error: %v", err)), nil
+				return nil, nil, toolErr("Drive API export error: %v", err)
 			}
 			defer resp.Body.Close()
 			data, err = io.ReadAll(resp.Body)
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("reading export: %v", err)), nil
+				return nil, nil, toolErr("reading export: %v", err)
 			}
 		} else {
 			outputMIME = mimeType
 			resp, err := svc.Files.Get(fileID).SupportsAllDrives(true).Download()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Drive API download error: %v", err)), nil
+				return nil, nil, toolErr("Drive API download error: %v", err)
 			}
 			defer resp.Body.Close()
 			data, err = io.ReadAll(resp.Body)
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("reading download: %v", err)), nil
+				return nil, nil, toolErr("reading download: %v", err)
 			}
 		}
 
@@ -346,95 +362,111 @@ func handleGetDriveFileDownloadURL(getClient httpClientFunc) mcpserver.ToolHandl
 			fmt.Fprintf(&b, "\nNote: Google native file exported to %s format.", outputMIME)
 		}
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- list_drive_items ---
 
-func registerListDriveItems(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_drive_items",
-		mcp.WithDescription("Lists files and folders, supporting shared drives.\nIf `drive_id` is specified, lists items within that shared drive. `folder_id` is then relative to that drive.\nIf `drive_id` is not specified, lists items from user's \"My Drive\" and accessible shared drives."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("folder_id", mcp.Description("The ID of the Google Drive folder. Defaults to 'root'.")),
-		mcp.WithNumber("page_size", mcp.Description("The maximum number of items to return. Defaults to 100.")),
-		mcp.WithString("drive_id", mcp.Description("ID of the shared drive.")),
-		mcp.WithBoolean("include_items_from_all_drives", mcp.Description("Whether items from all accessible shared drives should be included. Defaults to True.")),
-		mcp.WithString("corpora", mcp.Description("Corpus to query ('user', 'drive', 'allDrives').")),
-	)
-	s.AddTool(tool, handleListDriveItems(getClient))
+func registerListDriveItems(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "list_drive_items",
+		Description: "Lists files and folders, supporting shared drives.\nIf `drive_id` is specified, lists items within that shared drive. `folder_id` is then relative to that drive.\nIf `drive_id` is not specified, lists items from user's \"My Drive\" and accessible shared drives.",
+	}
+	mcp.AddTool(s, tool, handleListDriveItems(getClient))
 }
 
-func handleListDriveItems(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// listDriveItemsIn is the input schema for list_drive_items.
+type listDriveItemsIn struct {
+	UserGoogleEmail           string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FolderID                  string `json:"folder_id,omitempty" jsonschema:"The ID of the Google Drive folder. Defaults to 'root'."`
+	PageSize                  int    `json:"page_size,omitempty" jsonschema:"The maximum number of items to return. Defaults to 100."`
+	DriveID                   string `json:"drive_id,omitempty" jsonschema:"ID of the shared drive."`
+	IncludeItemsFromAllDrives *bool  `json:"include_items_from_all_drives,omitempty" jsonschema:"Whether items from all accessible shared drives should be included. Defaults to True."`
+	Corpora                   string `json:"corpora,omitempty" jsonschema:"Corpus to query ('user', 'drive', 'allDrives')."`
+}
+
+func handleListDriveItems(getClient httpClientFunc) mcp.ToolHandlerFor[listDriveItemsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listDriveItemsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		folderID := request.GetString("folder_id", "root")
-		pageSize := request.GetInt("page_size", 100)
-		driveID := request.GetString("drive_id", "")
-		includeAllDrives := getBool(request, "include_items_from_all_drives", true)
-		corpora := request.GetString("corpora", "")
+		folderID := in.FolderID
+		if folderID == "" {
+			folderID = "root"
+		}
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 100
+		}
+		driveID := in.DriveID
+		includeAllDrives := true
+		if in.IncludeItemsFromAllDrives != nil {
+			includeAllDrives = *in.IncludeItemsFromAllDrives
+		}
+		corpora := in.Corpora
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Resolve folder shortcuts.
 		resolvedFolderID, err := resolveFolderID(svc, folderID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		query := fmt.Sprintf("'%s' in parents and trashed=false", resolvedFolderID)
 
 		resp, err := buildDriveListCall(svc, query, int64(pageSize), driveID, includeAllDrives, corpora).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		if len(resp.Files) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No items found in folder '%s'.", folderID)), nil
+			return textResult(fmt.Sprintf("No items found in folder '%s'.", folderID))
 		}
 
 		header := fmt.Sprintf("Found %d items in folder '%s' for %s:", len(resp.Files), folderID, email)
-		return mcp.NewToolResultText(formatDriveFileList(resp.Files, header)), nil
+		return textResult(formatDriveFileList(resp.Files, header))
 	}
 }
 
 // --- get_drive_file_permissions ---
 
-func registerGetDriveFilePermissions(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_drive_file_permissions",
-		mcp.WithDescription("Gets detailed metadata about a Google Drive file including sharing permissions."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("The ID of the file to check permissions for.")),
-	)
-	s.AddTool(tool, handleGetDriveFilePermissions(getClient))
+func registerGetDriveFilePermissions(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_drive_file_permissions",
+		Description: "Gets detailed metadata about a Google Drive file including sharing permissions.",
+	}
+	mcp.AddTool(s, tool, handleGetDriveFilePermissions(getClient))
 }
 
-func handleGetDriveFilePermissions(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// getDriveFilePermissionsIn is the input schema for get_drive_file_permissions.
+type getDriveFilePermissionsIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileID          string `json:"file_id" jsonschema:"The ID of the file to check permissions for."`
+}
+
+func handleGetDriveFilePermissions(getClient httpClientFunc) mcp.ToolHandlerFor[getDriveFilePermissionsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getDriveFilePermissionsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
-		}
+		fileID := in.FileID
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Resolve shortcuts.
 		resolvedID, _, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 
@@ -443,7 +475,7 @@ func handleGetDriveFilePermissions(getClient httpClientFunc) mcpserver.ToolHandl
 			SupportsAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		var b strings.Builder
@@ -505,35 +537,37 @@ func handleGetDriveFilePermissions(getClient httpClientFunc) mcpserver.ToolHandl
 			b.WriteString("   To fix: Right-click the file in Google Drive > Share > Anyone with the link > Viewer\n")
 		}
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- check_drive_file_public_access ---
 
-func registerCheckDriveFilePublicAccess(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("check_drive_file_public_access",
-		mcp.WithDescription("Searches for a file by name and checks if it has public link sharing enabled."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_name", mcp.Required(), mcp.Description("The name of the file to check.")),
-	)
-	s.AddTool(tool, handleCheckDriveFilePublicAccess(getClient))
+func registerCheckDriveFilePublicAccess(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "check_drive_file_public_access",
+		Description: "Searches for a file by name and checks if it has public link sharing enabled.",
+	}
+	mcp.AddTool(s, tool, handleCheckDriveFilePublicAccess(getClient))
 }
 
-func handleCheckDriveFilePublicAccess(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// checkDriveFilePublicAccessIn is the input schema for check_drive_file_public_access.
+type checkDriveFilePublicAccessIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileName        string `json:"file_name" jsonschema:"The name of the file to check."`
+}
+
+func handleCheckDriveFilePublicAccess(getClient httpClientFunc) mcp.ToolHandlerFor[checkDriveFilePublicAccessIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in checkDriveFilePublicAccessIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileName, err := request.RequireString("file_name")
-		if err != nil {
-			return mcp.NewToolResultError("file_name is required"), nil
-		}
+		fileName := in.FileName
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		escaped := strings.ReplaceAll(fileName, "'", "\\'")
@@ -547,11 +581,11 @@ func handleCheckDriveFilePublicAccess(getClient httpClientFunc) mcpserver.ToolHa
 			IncludeItemsFromAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		if len(files.Files) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No file found with name '%s'", fileName)), nil
+			return textResult(fmt.Sprintf("No file found with name '%s'", fileName))
 		}
 
 		var b strings.Builder
@@ -567,7 +601,7 @@ func handleCheckDriveFilePublicAccess(getClient httpClientFunc) mcpserver.ToolHa
 		fileID := files.Files[0].Id
 		resolvedID, _, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 
@@ -576,7 +610,7 @@ func handleCheckDriveFilePublicAccess(getClient httpClientFunc) mcpserver.ToolHa
 			SupportsAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		fmt.Fprintf(&b, "File: %s\n", fileMeta.Name)
@@ -593,40 +627,42 @@ func handleCheckDriveFilePublicAccess(getClient httpClientFunc) mcpserver.ToolHa
 			b.WriteString("Fix: Drive > Share > 'Anyone with the link' > 'Viewer'\n")
 		}
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- get_drive_shareable_link ---
 
-func registerGetDriveShareableLink(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_drive_shareable_link",
-		mcp.WithDescription("Gets the shareable link for a Google Drive file or folder."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("The ID of the file or folder to get the shareable link for. Required.")),
-	)
-	s.AddTool(tool, handleGetDriveShareableLink(getClient))
+func registerGetDriveShareableLink(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_drive_shareable_link",
+		Description: "Gets the shareable link for a Google Drive file or folder.",
+	}
+	mcp.AddTool(s, tool, handleGetDriveShareableLink(getClient))
 }
 
-func handleGetDriveShareableLink(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// getDriveShareableLinkIn is the input schema for get_drive_shareable_link.
+type getDriveShareableLinkIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileID          string `json:"file_id" jsonschema:"The ID of the file or folder to get the shareable link for. Required."`
+}
+
+func handleGetDriveShareableLink(getClient httpClientFunc) mcp.ToolHandlerFor[getDriveShareableLinkIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getDriveShareableLinkIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
-		}
+		fileID := in.FileID
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedID, _, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 
@@ -635,7 +671,7 @@ func handleGetDriveShareableLink(getClient httpClientFunc) mcpserver.ToolHandler
 			SupportsAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		var b strings.Builder
@@ -661,52 +697,60 @@ func handleGetDriveShareableLink(getClient httpClientFunc) mcpserver.ToolHandler
 			}
 		}
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- create_drive_file ---
 
-func registerCreateDriveFile(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_drive_file",
-		mcp.WithDescription("Creates a new file in Google Drive, supporting creation within shared drives.\nAccepts either direct content or a fileUrl to fetch the content from."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_name", mcp.Required(), mcp.Description("The name for the new file.")),
-		mcp.WithString("content", mcp.Description("If provided, the content to write to the file.")),
-		mcp.WithString("folder_id", mcp.Description("The ID of the parent folder. Defaults to 'root'.")),
-		mcp.WithString("mime_type", mcp.Description("The MIME type of the file. Defaults to 'text/plain'.")),
-		mcp.WithString("fileUrl", mcp.Description("If provided, fetches the file content from this URL. Supports file://, http://, and https:// protocols.")),
-	)
-	s.AddTool(tool, handleCreateDriveFile(getClient))
+func registerCreateDriveFile(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "create_drive_file",
+		Description: "Creates a new file in Google Drive, supporting creation within shared drives.\nAccepts either direct content or a fileUrl to fetch the content from.",
+	}
+	mcp.AddTool(s, tool, handleCreateDriveFile(getClient))
 }
 
-func handleCreateDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// createDriveFileIn is the input schema for create_drive_file.
+type createDriveFileIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileName        string `json:"file_name" jsonschema:"The name for the new file."`
+	Content         string `json:"content,omitempty" jsonschema:"If provided, the content to write to the file."`
+	FolderID        string `json:"folder_id,omitempty" jsonschema:"The ID of the parent folder. Defaults to 'root'."`
+	MimeType        string `json:"mime_type,omitempty" jsonschema:"The MIME type of the file. Defaults to 'text/plain'."`
+	FileURL         string `json:"fileUrl,omitempty" jsonschema:"If provided, fetches the file content from this URL. Supports file://, http://, and https:// protocols."`
+}
+
+func handleCreateDriveFile(getClient httpClientFunc) mcp.ToolHandlerFor[createDriveFileIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createDriveFileIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileName, err := request.RequireString("file_name")
-		if err != nil {
-			return mcp.NewToolResultError("file_name is required"), nil
+		fileName := in.FileName
+		content := in.Content
+		folderID := in.FolderID
+		if folderID == "" {
+			folderID = "root"
 		}
-		content := request.GetString("content", "")
-		folderID := request.GetString("folder_id", "root")
-		mimeType := request.GetString("mime_type", "text/plain")
-		fileURL := request.GetString("fileUrl", "")
+		mimeType := in.MimeType
+		if mimeType == "" {
+			mimeType = "text/plain"
+		}
+		fileURL := in.FileURL
 
 		if content == "" && fileURL == "" {
-			return mcp.NewToolResultError("You must provide either 'content' or 'fileUrl'."), nil
+			return nil, nil, toolErr("You must provide either 'content' or 'fileUrl'.")
 		}
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedFolderID, err := resolveFolderID(svc, folderID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		fileMeta := &drive.File{
@@ -720,7 +764,7 @@ func handleCreateDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		if content != "" {
 			reader = bytes.NewReader([]byte(content))
 		} else {
-			return mcp.NewToolResultError("fileUrl support is not yet implemented in the Go server. Please use 'content' parameter instead."), nil
+			return nil, nil, toolErr("fileUrl support is not yet implemented in the Go server. Please use 'content' parameter instead.")
 		}
 
 		created, err := svc.Files.Create(fileMeta).
@@ -729,7 +773,7 @@ func handleCreateDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			SupportsAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		link := created.WebViewLink
@@ -739,7 +783,7 @@ func handleCreateDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		msg := fmt.Sprintf("Successfully created file '%s' (ID: %s) in folder '%s' for %s. Link: %s",
 			created.Name, created.Id, folderID, email, link)
-		return mcp.NewToolResultText(msg), nil
+		return textResult(msg)
 	}
 }
 
@@ -761,35 +805,40 @@ var googleDocsImportFormats = map[string]string{
 
 const googleDocsMIMEType = "application/vnd.google-apps.document"
 
-func registerImportToGoogleDoc(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("import_to_google_doc",
-		mcp.WithDescription("Imports a file (Markdown, DOCX, TXT, HTML, RTF, ODT) into Google Docs format with automatic conversion.\n\nGoogle Drive automatically converts the source file to native Google Docs format, preserving formatting like headings, lists, bold, italic, etc."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_name", mcp.Required(), mcp.Description("The name for the new Google Doc (extension will be ignored).")),
-		mcp.WithString("content", mcp.Description("Text content for text-based formats (MD, TXT, HTML).")),
-		mcp.WithString("file_path", mcp.Description("Local file path for binary formats (DOCX, ODT). Supports file:// URLs.")),
-		mcp.WithString("file_url", mcp.Description("Remote URL to fetch the file from (http/https).")),
-		mcp.WithString("source_format", mcp.Description("Source format hint ('md', 'markdown', 'docx', 'txt', 'html', 'rtf', 'odt'). Auto-detected from file_name extension if not provided.")),
-		mcp.WithString("folder_id", mcp.Description("The ID of the parent folder. Defaults to 'root'.")),
-	)
-	s.AddTool(tool, handleImportToGoogleDoc(getClient))
+func registerImportToGoogleDoc(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "import_to_google_doc",
+		Description: "Imports a file (Markdown, DOCX, TXT, HTML, RTF, ODT) into Google Docs format with automatic conversion.\n\nGoogle Drive automatically converts the source file to native Google Docs format, preserving formatting like headings, lists, bold, italic, etc.",
+	}
+	mcp.AddTool(s, tool, handleImportToGoogleDoc(getClient))
 }
 
-func handleImportToGoogleDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// importToGoogleDocIn is the input schema for import_to_google_doc.
+type importToGoogleDocIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileName        string `json:"file_name" jsonschema:"The name for the new Google Doc (extension will be ignored)."`
+	Content         string `json:"content,omitempty" jsonschema:"Text content for text-based formats (MD, TXT, HTML)."`
+	FilePath        string `json:"file_path,omitempty" jsonschema:"Local file path for binary formats (DOCX, ODT). Supports file:// URLs."`
+	FileURL         string `json:"file_url,omitempty" jsonschema:"Remote URL to fetch the file from (http/https)."`
+	SourceFormat    string `json:"source_format,omitempty" jsonschema:"Source format hint ('md', 'markdown', 'docx', 'txt', 'html', 'rtf', 'odt'). Auto-detected from file_name extension if not provided."`
+	FolderID        string `json:"folder_id,omitempty" jsonschema:"The ID of the parent folder. Defaults to 'root'."`
+}
+
+func handleImportToGoogleDoc(getClient httpClientFunc) mcp.ToolHandlerFor[importToGoogleDocIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in importToGoogleDocIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileName, err := request.RequireString("file_name")
-		if err != nil {
-			return mcp.NewToolResultError("file_name is required"), nil
+		fileName := in.FileName
+		content := in.Content
+		filePath := in.FilePath
+		fileURL := in.FileURL
+		sourceFormat := in.SourceFormat
+		folderID := in.FolderID
+		if folderID == "" {
+			folderID = "root"
 		}
-		content := request.GetString("content", "")
-		filePath := request.GetString("file_path", "")
-		fileURL := request.GetString("file_url", "")
-		sourceFormat := request.GetString("source_format", "")
-		folderID := request.GetString("folder_id", "root")
 
 		// Validate exactly one source provided.
 		sourceCount := 0
@@ -803,10 +852,10 @@ func handleImportToGoogleDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 			sourceCount++
 		}
 		if sourceCount == 0 {
-			return mcp.NewToolResultError("You must provide one of: 'content', 'file_path', or 'file_url'."), nil
+			return nil, nil, toolErr("You must provide one of: 'content', 'file_path', or 'file_url'.")
 		}
 		if sourceCount > 1 {
-			return mcp.NewToolResultError("Provide only one of: 'content', 'file_path', or 'file_url'."), nil
+			return nil, nil, toolErr("Provide only one of: 'content', 'file_path', or 'file_url'.")
 		}
 
 		// Determine source MIME type.
@@ -815,7 +864,7 @@ func handleImportToGoogleDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 			key := "." + strings.ToLower(strings.TrimPrefix(sourceFormat, "."))
 			mime, ok := googleDocsImportFormats[key]
 			if !ok {
-				return mcp.NewToolResultError(fmt.Sprintf("Unsupported source_format: '%s'", sourceFormat)), nil
+				return nil, nil, toolErr("Unsupported source_format: '%s'", sourceFormat)
 			}
 			sourceMIME = mime
 		} else {
@@ -824,12 +873,12 @@ func handleImportToGoogleDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedFolderID, err := resolveFolderID(svc, folderID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		// Strip extension from file name for the Doc title.
@@ -848,7 +897,7 @@ func handleImportToGoogleDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 		if content != "" {
 			reader = bytes.NewReader([]byte(content))
 		} else {
-			return mcp.NewToolResultError("file_path and file_url support are not yet implemented in the Go server. Please use 'content' parameter instead."), nil
+			return nil, nil, toolErr("file_path and file_url support are not yet implemented in the Go server. Please use 'content' parameter instead.")
 		}
 
 		created, err := svc.Files.Create(fileMeta).
@@ -857,7 +906,7 @@ func handleImportToGoogleDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 			SupportsAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		link := created.WebViewLink
@@ -872,52 +921,52 @@ func handleImportToGoogleDoc(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 		fmt.Fprintf(&b, "   Folder: %s\n", folderID)
 		fmt.Fprintf(&b, "   Link: %s", link)
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- update_drive_file ---
 
-func registerUpdateDriveFile(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("update_drive_file",
-		mcp.WithDescription("Updates metadata and properties of a Google Drive file."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("The ID of the file to update. Required.")),
-		mcp.WithString("name", mcp.Description("New name for the file.")),
-		mcp.WithString("description", mcp.Description("New description for the file.")),
-		mcp.WithString("mime_type", mcp.Description("New MIME type (note: changing type may require content upload).")),
-		mcp.WithString("add_parents", mcp.Description("Comma-separated folder IDs to add as parents.")),
-		mcp.WithString("remove_parents", mcp.Description("Comma-separated folder IDs to remove from parents.")),
-		mcp.WithBoolean("starred", mcp.Description("Whether to star/unstar the file.")),
-		mcp.WithBoolean("trashed", mcp.Description("Whether to move file to/from trash.")),
-		mcp.WithBoolean("writers_can_share", mcp.Description("Whether editors can share the file.")),
-		mcp.WithBoolean("copy_requires_writer_permission", mcp.Description("Whether copying requires writer permission.")),
-		mcp.WithObject("properties", mcp.Description("Custom key-value properties for the file.")),
-	)
-	s.AddTool(tool, handleUpdateDriveFile(getClient))
+func registerUpdateDriveFile(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "update_drive_file",
+		Description: "Updates metadata and properties of a Google Drive file.",
+	}
+	mcp.AddTool(s, tool, handleUpdateDriveFile(getClient))
 }
 
-func handleUpdateDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
-		}
+// updateDriveFileIn is the input schema for update_drive_file.
+type updateDriveFileIn struct {
+	UserGoogleEmail              string         `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileID                       string         `json:"file_id" jsonschema:"The ID of the file to update. Required."`
+	Name                         string         `json:"name,omitempty" jsonschema:"New name for the file."`
+	Description                  string         `json:"description,omitempty" jsonschema:"New description for the file."`
+	MimeType                     string         `json:"mime_type,omitempty" jsonschema:"New MIME type (note: changing type may require content upload)."`
+	AddParents                   string         `json:"add_parents,omitempty" jsonschema:"Comma-separated folder IDs to add as parents."`
+	RemoveParents                string         `json:"remove_parents,omitempty" jsonschema:"Comma-separated folder IDs to remove from parents."`
+	Starred                      *bool          `json:"starred,omitempty" jsonschema:"Whether to star/unstar the file."`
+	Trashed                      *bool          `json:"trashed,omitempty" jsonschema:"Whether to move file to/from trash."`
+	WritersCanShare              *bool          `json:"writers_can_share,omitempty" jsonschema:"Whether editors can share the file."`
+	CopyRequiresWriterPermission *bool          `json:"copy_requires_writer_permission,omitempty" jsonschema:"Whether copying requires writer permission."`
+	Properties                   map[string]any `json:"properties,omitempty" jsonschema:"Custom key-value properties for the file."`
+}
 
-		args := request.GetArguments()
+func handleUpdateDriveFile(getClient httpClientFunc) mcp.ToolHandlerFor[updateDriveFileIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateDriveFileIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		fileID := in.FileID
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedID, _, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 
@@ -925,76 +974,65 @@ func handleUpdateDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		updateBody := &drive.File{}
 		hasUpdate := false
 
-		if v, ok := args["name"]; ok && v != nil {
-			if s, ok := v.(string); ok {
-				updateBody.Name = s
-				hasUpdate = true
+		if in.Name != "" {
+			updateBody.Name = in.Name
+			hasUpdate = true
+		}
+		if in.Description != "" {
+			updateBody.Description = in.Description
+			hasUpdate = true
+		}
+		if in.MimeType != "" {
+			updateBody.MimeType = in.MimeType
+			hasUpdate = true
+		}
+		if in.Starred != nil {
+			b := *in.Starred
+			updateBody.Starred = b
+			hasUpdate = true
+			if !b {
+				updateBody.ForceSendFields = append(updateBody.ForceSendFields, "Starred")
 			}
 		}
-		if v, ok := args["description"]; ok && v != nil {
-			if s, ok := v.(string); ok {
-				updateBody.Description = s
-				hasUpdate = true
+		if in.Trashed != nil {
+			b := *in.Trashed
+			updateBody.Trashed = b
+			hasUpdate = true
+			if !b {
+				updateBody.ForceSendFields = append(updateBody.ForceSendFields, "Trashed")
 			}
 		}
-		if v, ok := args["mime_type"]; ok && v != nil {
-			if s, ok := v.(string); ok {
-				updateBody.MimeType = s
-				hasUpdate = true
+		if in.WritersCanShare != nil {
+			b := *in.WritersCanShare
+			updateBody.WritersCanShare = b
+			hasUpdate = true
+			if !b {
+				updateBody.ForceSendFields = append(updateBody.ForceSendFields, "WritersCanShare")
 			}
 		}
-		if v, ok := args["starred"]; ok && v != nil {
-			if b, ok := v.(bool); ok {
-				updateBody.Starred = b
-				hasUpdate = true
-				if !b {
-					updateBody.ForceSendFields = append(updateBody.ForceSendFields, "Starred")
-				}
+		if in.CopyRequiresWriterPermission != nil {
+			b := *in.CopyRequiresWriterPermission
+			updateBody.CopyRequiresWriterPermission = b
+			hasUpdate = true
+			if !b {
+				updateBody.ForceSendFields = append(updateBody.ForceSendFields, "CopyRequiresWriterPermission")
 			}
 		}
-		if v, ok := args["trashed"]; ok && v != nil {
-			if b, ok := v.(bool); ok {
-				updateBody.Trashed = b
-				hasUpdate = true
-				if !b {
-					updateBody.ForceSendFields = append(updateBody.ForceSendFields, "Trashed")
-				}
+		if in.Properties != nil {
+			props := in.Properties
+			strProps := make(map[string]string, len(props))
+			for k, val := range props {
+				strProps[k] = fmt.Sprintf("%v", val)
 			}
-		}
-		if v, ok := args["writers_can_share"]; ok && v != nil {
-			if b, ok := v.(bool); ok {
-				updateBody.WritersCanShare = b
-				hasUpdate = true
-				if !b {
-					updateBody.ForceSendFields = append(updateBody.ForceSendFields, "WritersCanShare")
-				}
-			}
-		}
-		if v, ok := args["copy_requires_writer_permission"]; ok && v != nil {
-			if b, ok := v.(bool); ok {
-				updateBody.CopyRequiresWriterPermission = b
-				hasUpdate = true
-				if !b {
-					updateBody.ForceSendFields = append(updateBody.ForceSendFields, "CopyRequiresWriterPermission")
-				}
-			}
-		}
-		if v, ok := args["properties"]; ok && v != nil {
-			if props, ok := v.(map[string]any); ok {
-				strProps := make(map[string]string, len(props))
-				for k, val := range props {
-					strProps[k] = fmt.Sprintf("%v", val)
-				}
-				updateBody.Properties = strProps
-				hasUpdate = true
-			}
+			updateBody.Properties = strProps
+			hasUpdate = true
 		}
 
-		addParents := request.GetString("add_parents", "")
-		removeParents := request.GetString("remove_parents", "")
+		addParents := in.AddParents
+		removeParents := in.RemoveParents
 
 		if !hasUpdate && addParents == "" && removeParents == "" {
-			return mcp.NewToolResultError("No updates specified."), nil
+			return nil, nil, toolErr("No updates specified.")
 		}
 
 		call := svc.Files.Update(fileID, updateBody).
@@ -1010,7 +1048,7 @@ func handleUpdateDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		updated, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		link := updated.WebViewLink
@@ -1023,44 +1061,49 @@ func handleUpdateDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		fmt.Fprintf(&b, "   File ID: %s\n", fileID)
 		fmt.Fprintf(&b, "View file: %s", link)
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- copy_drive_file ---
 
-func registerCopyDriveFile(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("copy_drive_file",
-		mcp.WithDescription("Creates a copy of an existing Google Drive file.\n\nThe copy maintains all formatting and content from the original file."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("The ID of the file to copy. Required.")),
-		mcp.WithString("new_name", mcp.Description("New name for the copied file. If not provided, uses \"Copy of [original name]\".")),
-		mcp.WithString("parent_folder_id", mcp.Description("The ID of the folder where the copy should be created. Defaults to 'root' (My Drive).")),
-	)
-	s.AddTool(tool, handleCopyDriveFile(getClient))
+func registerCopyDriveFile(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "copy_drive_file",
+		Description: "Creates a copy of an existing Google Drive file.\n\nThe copy maintains all formatting and content from the original file.",
+	}
+	mcp.AddTool(s, tool, handleCopyDriveFile(getClient))
 }
 
-func handleCopyDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// copyDriveFileIn is the input schema for copy_drive_file.
+type copyDriveFileIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileID          string `json:"file_id" jsonschema:"The ID of the file to copy. Required."`
+	NewName         string `json:"new_name,omitempty" jsonschema:"New name for the copied file. If not provided, uses \"Copy of [original name]\"."`
+	ParentFolderID  string `json:"parent_folder_id,omitempty" jsonschema:"The ID of the folder where the copy should be created. Defaults to 'root' (My Drive)."`
+}
+
+func handleCopyDriveFile(getClient httpClientFunc) mcp.ToolHandlerFor[copyDriveFileIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in copyDriveFileIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
+		fileID := in.FileID
+		newName := in.NewName
+		parentFolderID := in.ParentFolderID
+		if parentFolderID == "" {
+			parentFolderID = "root"
 		}
-		newName := request.GetString("new_name", "")
-		parentFolderID := request.GetString("parent_folder_id", "root")
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedID, meta, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 		originalName := meta.Name
@@ -1070,7 +1113,7 @@ func handleCopyDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		resolvedFolderID, err := resolveFolderID(svc, parentFolderID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		copyBody := &drive.File{}
@@ -1088,7 +1131,7 @@ func handleCopyDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			Fields("id, name, webViewLink, mimeType, parents").
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		var b strings.Builder
@@ -1104,71 +1147,80 @@ func handleCopyDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		}
 		fmt.Fprintf(&b, "\nView copied file: %s", link)
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- share_drive_file ---
 
-func registerShareDriveFile(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("share_drive_file",
-		mcp.WithDescription("Shares a Google Drive file or folder with a user, group, domain, or anyone with the link.\n\nWhen sharing a folder, all files inside inherit the permission."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("The ID of the file or folder to share. Required.")),
-		mcp.WithString("share_with", mcp.Description("Email address (for user/group), domain name (for domain), or omit for 'anyone'.")),
-		mcp.WithString("role", mcp.Description("Permission role - 'reader', 'commenter', or 'writer'. Defaults to 'reader'.")),
-		mcp.WithString("share_type", mcp.Description("Type of sharing - 'user', 'group', 'domain', or 'anyone'. Defaults to 'user'.")),
-		mcp.WithBoolean("send_notification", mcp.Description("Whether to send a notification email. Defaults to true.")),
-		mcp.WithString("email_message", mcp.Description("Custom message for the notification email.")),
-		mcp.WithString("expiration_time", mcp.Description("Expiration time in RFC 3339 format (e.g., \"2025-01-15T00:00:00Z\").")),
-		mcp.WithBoolean("allow_file_discovery", mcp.Description("For 'domain' or 'anyone' shares - whether the file can be found via search.")),
-	)
-	s.AddTool(tool, handleShareDriveFile(getClient))
+func registerShareDriveFile(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "share_drive_file",
+		Description: "Shares a Google Drive file or folder with a user, group, domain, or anyone with the link.\n\nWhen sharing a folder, all files inside inherit the permission.",
+	}
+	mcp.AddTool(s, tool, handleShareDriveFile(getClient))
 }
 
-func handleShareDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
-		}
-		shareWith := request.GetString("share_with", "")
-		role := request.GetString("role", "reader")
-		shareType := request.GetString("share_type", "user")
-		sendNotification := getBool(request, "send_notification", true)
-		emailMessage := request.GetString("email_message", "")
-		expirationTime := request.GetString("expiration_time", "")
+// shareDriveFileIn is the input schema for share_drive_file.
+type shareDriveFileIn struct {
+	UserGoogleEmail       string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileID                string `json:"file_id" jsonschema:"The ID of the file or folder to share. Required."`
+	ShareWith             string `json:"share_with,omitempty" jsonschema:"Email address (for user/group), domain name (for domain), or omit for 'anyone'."`
+	Role                  string `json:"role,omitempty" jsonschema:"Permission role - 'reader', 'commenter', or 'writer'. Defaults to 'reader'."`
+	ShareType             string `json:"share_type,omitempty" jsonschema:"Type of sharing - 'user', 'group', 'domain', or 'anyone'. Defaults to 'user'."`
+	SendNotificationEmail *bool  `json:"send_notification,omitempty" jsonschema:"Whether to send a notification email. Defaults to true."`
+	EmailMessage          string `json:"email_message,omitempty" jsonschema:"Custom message for the notification email."`
+	ExpirationTime        string `json:"expiration_time,omitempty" jsonschema:"Expiration time in RFC 3339 format (e.g., \"2025-01-15T00:00:00Z\")."`
+	AllowFileDiscovery    *bool  `json:"allow_file_discovery,omitempty" jsonschema:"For 'domain' or 'anyone' shares - whether the file can be found via search."`
+}
 
-		args := request.GetArguments()
+func handleShareDriveFile(getClient httpClientFunc) mcp.ToolHandlerFor[shareDriveFileIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in shareDriveFileIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		fileID := in.FileID
+		shareWith := in.ShareWith
+		role := in.Role
+		if role == "" {
+			role = "reader"
+		}
+		shareType := in.ShareType
+		if shareType == "" {
+			shareType = "user"
+		}
+		sendNotification := true
+		if in.SendNotificationEmail != nil {
+			sendNotification = *in.SendNotificationEmail
+		}
+		emailMessage := in.EmailMessage
+		expirationTime := in.ExpirationTime
 
 		// Validate role.
 		if role != "reader" && role != "commenter" && role != "writer" {
-			return mcp.NewToolResultError(fmt.Sprintf("Invalid role '%s'. Must be 'reader', 'commenter', or 'writer'.", role)), nil
+			return nil, nil, toolErr("Invalid role '%s'. Must be 'reader', 'commenter', or 'writer'.", role)
 		}
 		// Validate share_type.
 		if shareType != "user" && shareType != "group" && shareType != "domain" && shareType != "anyone" {
-			return mcp.NewToolResultError(fmt.Sprintf("Invalid share_type '%s'. Must be 'user', 'group', 'domain', or 'anyone'.", shareType)), nil
+			return nil, nil, toolErr("Invalid share_type '%s'. Must be 'user', 'group', 'domain', or 'anyone'.", shareType)
 		}
 
 		if (shareType == "user" || shareType == "group") && shareWith == "" {
-			return mcp.NewToolResultError(fmt.Sprintf("share_with is required for share_type '%s'", shareType)), nil
+			return nil, nil, toolErr("share_with is required for share_type '%s'", shareType)
 		}
 		if shareType == "domain" && shareWith == "" {
-			return mcp.NewToolResultError("share_with (domain name) is required for share_type 'domain'"), nil
+			return nil, nil, toolErr("share_with (domain name) is required for share_type 'domain'")
 		}
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedID, meta, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 
@@ -1184,13 +1236,12 @@ func handleShareDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		if expirationTime != "" {
 			perm.ExpirationTime = expirationTime
 		}
-		if (shareType == "domain" || shareType == "anyone") {
-			if v, ok := args["allow_file_discovery"]; ok && v != nil {
-				if b, ok := v.(bool); ok {
-					perm.AllowFileDiscovery = b
-					if !b {
-						perm.ForceSendFields = append(perm.ForceSendFields, "AllowFileDiscovery")
-					}
+		if shareType == "domain" || shareType == "anyone" {
+			if in.AllowFileDiscovery != nil {
+				b := *in.AllowFileDiscovery
+				perm.AllowFileDiscovery = b
+				if !b {
+					perm.ForceSendFields = append(perm.ForceSendFields, "AllowFileDiscovery")
 				}
 			}
 		}
@@ -1208,7 +1259,7 @@ func handleShareDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		created, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		fileName := meta.Name
@@ -1226,55 +1277,58 @@ func handleShareDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		fmt.Fprintf(&b, "  - %s\n", formatPermissionInfo(created))
 		fmt.Fprintf(&b, "\nView link: %s", link)
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- batch_share_drive_file ---
 
-func registerBatchShareDriveFile(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("batch_share_drive_file",
-		mcp.WithDescription("Shares a Google Drive file or folder with multiple users or groups in a single operation.\n\nEach recipient can have a different role and optional expiration time.\nRecipients are processed sequentially."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("The ID of the file or folder to share. Required.")),
-		mcp.WithArray("recipients", mcp.Required(), mcp.Description("List of recipient objects. Each should have: email (str), role (str, optional, default 'reader'), share_type (str, optional, default 'user'), expiration_time (str, optional). For domain shares, use 'domain' field instead of 'email'."), mcp.Items(map[string]any{"type": "object"})),
-		mcp.WithBoolean("send_notification", mcp.Description("Whether to send notification emails. Defaults to true.")),
-		mcp.WithString("email_message", mcp.Description("Custom message for notification emails.")),
-	)
-	s.AddTool(tool, handleBatchShareDriveFile(getClient))
+func registerBatchShareDriveFile(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "batch_share_drive_file",
+		Description: "Shares a Google Drive file or folder with multiple users or groups in a single operation.\n\nEach recipient can have a different role and optional expiration time.\nRecipients are processed sequentially.",
+	}
+	mcp.AddTool(s, tool, handleBatchShareDriveFile(getClient))
 }
 
-func handleBatchShareDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
-		}
-		sendNotification := getBool(request, "send_notification", true)
-		emailMessage := request.GetString("email_message", "")
+// batchShareDriveFileIn is the input schema for batch_share_drive_file.
+type batchShareDriveFileIn struct {
+	UserGoogleEmail       string           `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileID                string           `json:"file_id" jsonschema:"The ID of the file or folder to share. Required."`
+	Recipients            []map[string]any `json:"recipients" jsonschema:"List of recipient objects. Each should have: email (str), role (str, optional, default 'reader'), share_type (str, optional, default 'user'), expiration_time (str, optional). For domain shares, use 'domain' field instead of 'email'."`
+	SendNotificationEmail *bool            `json:"send_notification,omitempty" jsonschema:"Whether to send notification emails. Defaults to true."`
+	EmailMessage          string           `json:"email_message,omitempty" jsonschema:"Custom message for notification emails."`
+}
 
-		args := request.GetArguments()
-		recipientsRaw, ok := args["recipients"]
-		if !ok || recipientsRaw == nil {
-			return mcp.NewToolResultError("recipients is required"), nil
+func handleBatchShareDriveFile(getClient httpClientFunc) mcp.ToolHandlerFor[batchShareDriveFileIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in batchShareDriveFileIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		recipientsList, ok := recipientsRaw.([]any)
-		if !ok || len(recipientsList) == 0 {
-			return mcp.NewToolResultError("recipients list cannot be empty"), nil
+		fileID := in.FileID
+		sendNotification := true
+		if in.SendNotificationEmail != nil {
+			sendNotification = *in.SendNotificationEmail
 		}
+		emailMessage := in.EmailMessage
+
+		if in.Recipients == nil {
+			return nil, nil, toolErr("recipients is required")
+		}
+		if len(in.Recipients) == 0 {
+			return nil, nil, toolErr("recipients list cannot be empty")
+		}
+		recipientsList := in.Recipients
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedID, meta, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 
@@ -1282,9 +1336,8 @@ func handleBatchShareDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFu
 		successCount := 0
 		failureCount := 0
 
-		for _, recipientRaw := range recipientsList {
-			recipient, ok := recipientRaw.(map[string]any)
-			if !ok {
+		for _, recipient := range recipientsList {
+			if recipient == nil {
 				results = append(results, "  - Skipped: invalid recipient format")
 				failureCount++
 				continue
@@ -1378,56 +1431,55 @@ func handleBatchShareDriveFile(getClient httpClientFunc) mcpserver.ToolHandlerFu
 		}
 		fmt.Fprintf(&b, "\nView link: %s", link)
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- update_drive_permission ---
 
-func registerUpdateDrivePermission(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("update_drive_permission",
-		mcp.WithDescription("Updates an existing permission on a Google Drive file or folder."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("The ID of the file or folder. Required.")),
-		mcp.WithString("permission_id", mcp.Required(), mcp.Description("The ID of the permission to update (from get_drive_file_permissions). Required.")),
-		mcp.WithString("role", mcp.Description("New role - 'reader', 'commenter', or 'writer'.")),
-		mcp.WithString("expiration_time", mcp.Description("Expiration time in RFC 3339 format (e.g., \"2025-01-15T00:00:00Z\").")),
-	)
-	s.AddTool(tool, handleUpdateDrivePermission(getClient))
+func registerUpdateDrivePermission(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "update_drive_permission",
+		Description: "Updates an existing permission on a Google Drive file or folder.",
+	}
+	mcp.AddTool(s, tool, handleUpdateDrivePermission(getClient))
 }
 
-func handleUpdateDrivePermission(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// updateDrivePermissionIn is the input schema for update_drive_permission.
+type updateDrivePermissionIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileID          string `json:"file_id" jsonschema:"The ID of the file or folder. Required."`
+	PermissionID    string `json:"permission_id" jsonschema:"The ID of the permission to update (from get_drive_file_permissions). Required."`
+	Role            string `json:"role,omitempty" jsonschema:"New role - 'reader', 'commenter', or 'writer'."`
+	ExpirationTime  string `json:"expiration_time,omitempty" jsonschema:"Expiration time in RFC 3339 format (e.g., \"2025-01-15T00:00:00Z\")."`
+}
+
+func handleUpdateDrivePermission(getClient httpClientFunc) mcp.ToolHandlerFor[updateDrivePermissionIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateDrivePermissionIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
-		}
-		permissionID, err := request.RequireString("permission_id")
-		if err != nil {
-			return mcp.NewToolResultError("permission_id is required"), nil
-		}
-		role := request.GetString("role", "")
-		expirationTime := request.GetString("expiration_time", "")
+		fileID := in.FileID
+		permissionID := in.PermissionID
+		role := in.Role
+		expirationTime := in.ExpirationTime
 
 		if role == "" && expirationTime == "" {
-			return mcp.NewToolResultError("Must provide at least one of: role, expiration_time"), nil
+			return nil, nil, toolErr("Must provide at least one of: role, expiration_time")
 		}
 		if role != "" && role != "reader" && role != "commenter" && role != "writer" {
-			return mcp.NewToolResultError(fmt.Sprintf("Invalid role '%s'. Must be 'reader', 'commenter', or 'writer'.", role)), nil
+			return nil, nil, toolErr("Invalid role '%s'. Must be 'reader', 'commenter', or 'writer'.", role)
 		}
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedID, meta, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 
@@ -1438,7 +1490,7 @@ func handleUpdateDrivePermission(getClient httpClientFunc) mcpserver.ToolHandler
 				Fields("role").
 				Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+				return nil, nil, toolErr("Drive API error: %v", err)
 			}
 			role = currentPerm.Role
 		}
@@ -1455,7 +1507,7 @@ func handleUpdateDrivePermission(getClient httpClientFunc) mcpserver.ToolHandler
 			Fields("id, type, role, emailAddress, domain, expirationTime").
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		fileName := meta.Name
@@ -1468,45 +1520,44 @@ func handleUpdateDrivePermission(getClient httpClientFunc) mcpserver.ToolHandler
 		b.WriteString("\nUpdated permission:\n")
 		fmt.Fprintf(&b, "  - %s", formatPermissionInfo(updated))
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- remove_drive_permission ---
 
-func registerRemoveDrivePermission(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("remove_drive_permission",
-		mcp.WithDescription("Removes a permission from a Google Drive file or folder, revoking access."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("The ID of the file or folder. Required.")),
-		mcp.WithString("permission_id", mcp.Required(), mcp.Description("The ID of the permission to remove (from get_drive_file_permissions). Required.")),
-	)
-	s.AddTool(tool, handleRemoveDrivePermission(getClient))
+func registerRemoveDrivePermission(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "remove_drive_permission",
+		Description: "Removes a permission from a Google Drive file or folder, revoking access.",
+	}
+	mcp.AddTool(s, tool, handleRemoveDrivePermission(getClient))
 }
 
-func handleRemoveDrivePermission(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// removeDrivePermissionIn is the input schema for remove_drive_permission.
+type removeDrivePermissionIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileID          string `json:"file_id" jsonschema:"The ID of the file or folder. Required."`
+	PermissionID    string `json:"permission_id" jsonschema:"The ID of the permission to remove (from get_drive_file_permissions). Required."`
+}
+
+func handleRemoveDrivePermission(getClient httpClientFunc) mcp.ToolHandlerFor[removeDrivePermissionIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in removeDrivePermissionIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
-		}
-		permissionID, err := request.RequireString("permission_id")
-		if err != nil {
-			return mcp.NewToolResultError("permission_id is required"), nil
-		}
+		fileID := in.FileID
+		permissionID := in.PermissionID
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedID, meta, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 
@@ -1514,7 +1565,7 @@ func handleRemoveDrivePermission(getClient httpClientFunc) mcpserver.ToolHandler
 			SupportsAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		fileName := meta.Name
@@ -1526,47 +1577,46 @@ func handleRemoveDrivePermission(getClient httpClientFunc) mcpserver.ToolHandler
 		fmt.Fprintf(&b, "Successfully removed permission from '%s'\n", fileName)
 		fmt.Fprintf(&b, "\nPermission ID '%s' has been revoked.", permissionID)
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
 // --- transfer_drive_ownership ---
 
-func registerTransferDriveOwnership(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("transfer_drive_ownership",
-		mcp.WithDescription("Transfers ownership of a Google Drive file or folder to another user.\n\nThis is an irreversible operation. The current owner will become an editor.\nOnly works within the same Google Workspace domain or for personal accounts."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address. Required.")),
-		mcp.WithString("file_id", mcp.Required(), mcp.Description("The ID of the file or folder to transfer. Required.")),
-		mcp.WithString("new_owner_email", mcp.Required(), mcp.Description("Email address of the new owner. Required.")),
-		mcp.WithBoolean("move_to_new_owners_root", mcp.Description("If true, moves the file to the new owner's My Drive root. Defaults to false.")),
-	)
-	s.AddTool(tool, handleTransferDriveOwnership(getClient))
+func registerTransferDriveOwnership(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "transfer_drive_ownership",
+		Description: "Transfers ownership of a Google Drive file or folder to another user.\n\nThis is an irreversible operation. The current owner will become an editor.\nOnly works within the same Google Workspace domain or for personal accounts.",
+	}
+	mcp.AddTool(s, tool, handleTransferDriveOwnership(getClient))
 }
 
-func handleTransferDriveOwnership(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// transferDriveOwnershipIn is the input schema for transfer_drive_ownership.
+type transferDriveOwnershipIn struct {
+	UserGoogleEmail     string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address. Required."`
+	FileID              string `json:"file_id" jsonschema:"The ID of the file or folder to transfer. Required."`
+	NewOwnerEmail       string `json:"new_owner_email" jsonschema:"Email address of the new owner. Required."`
+	MoveToNewOwnersRoot bool   `json:"move_to_new_owners_root,omitempty" jsonschema:"If true, moves the file to the new owner's My Drive root. Defaults to false."`
+}
+
+func handleTransferDriveOwnership(getClient httpClientFunc) mcp.ToolHandlerFor[transferDriveOwnershipIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in transferDriveOwnershipIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		fileID, err := request.RequireString("file_id")
-		if err != nil {
-			return mcp.NewToolResultError("file_id is required"), nil
-		}
-		newOwnerEmail, err := request.RequireString("new_owner_email")
-		if err != nil {
-			return mcp.NewToolResultError("new_owner_email is required"), nil
-		}
-		moveToRoot := getBool(request, "move_to_new_owners_root", false)
+		fileID := in.FileID
+		newOwnerEmail := in.NewOwnerEmail
+		moveToRoot := in.MoveToNewOwnersRoot
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resolvedID, meta, err := resolveDriveItem(svc, fileID)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 		fileID = resolvedID
 
@@ -1576,7 +1626,7 @@ func handleTransferDriveOwnership(getClient httpClientFunc) mcpserver.ToolHandle
 			SupportsAllDrives(true).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		var currentOwnerEmails []string
@@ -1601,7 +1651,7 @@ func handleTransferDriveOwnership(getClient httpClientFunc) mcpserver.ToolHandle
 			Fields("id, type, role, emailAddress").
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Drive API error: %v", err)), nil
+			return nil, nil, toolErr("Drive API error: %v", err)
 		}
 
 		fileName := meta.Name
@@ -1622,7 +1672,7 @@ func handleTransferDriveOwnership(getClient httpClientFunc) mcpserver.ToolHandle
 		}
 		b.WriteString("\nNote: Previous owner now has editor access.")
 
-		return mcp.NewToolResultText(b.String()), nil
+		return textResult(b.String())
 	}
 }
 
@@ -1792,19 +1842,6 @@ func formatPermissionInfo(p *drive.Permission) string {
 		return base + " | " + strings.Join(extras, ", ")
 	}
 	return base
-}
-
-// getBool extracts a bool param from the request, returning defaultVal if absent.
-func getBool(request mcp.CallToolRequest, key string, defaultVal bool) bool {
-	args := request.GetArguments()
-	raw, ok := args[key]
-	if !ok || raw == nil {
-		return defaultVal
-	}
-	if v, ok := raw.(bool); ok {
-		return v
-	}
-	return defaultVal
 }
 
 // detectSourceFormat detects the source MIME type from file name extension.

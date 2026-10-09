@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/google/jsonschema-go/jsonschema"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	people "google.golang.org/api/people/v1"
 
 	"github.com/magks/google-workspace-mcp-go/internal/google"
@@ -28,7 +28,7 @@ var (
 )
 
 // RegisterContactsTools registers all Contacts tools with the MCP server.
-func RegisterContactsTools(s *mcpserver.MCPServer, _ server.Config) {
+func RegisterContactsTools(s *mcp.Server, _ server.Config) {
 	getClient := clientFuncFromCache(google.DefaultClientCache())
 
 	// Read tools (US-021)
@@ -210,33 +210,45 @@ func formatContact(person *people.Person, detailed bool) string {
 // list_contacts
 // ---------------------------------------------------------------------------
 
-func registerListContacts(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_contacts",
-		mcp.WithDescription("List contacts for the authenticated user."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithNumber("page_size", mcp.Description("Maximum number of contacts to return (default: 100, max: 1000).")),
-		mcp.WithString("page_token", mcp.Description("Token for pagination.")),
-		mcp.WithString("sort_order", mcp.Description("Sort order."),
-			mcp.Enum("LAST_MODIFIED_ASCENDING", "LAST_MODIFIED_DESCENDING", "FIRST_NAME_ASCENDING", "LAST_NAME_ASCENDING")),
-	)
+// listContactsIn is the input schema for list_contacts.
+type listContactsIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	PageSize        int    `json:"page_size,omitempty" jsonschema:"Maximum number of contacts to return (default: 100, max: 1000)."`
+	PageToken       string `json:"page_token,omitempty" jsonschema:"Token for pagination."`
+	SortOrder       string `json:"sort_order,omitempty" jsonschema:"Sort order."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerListContacts(s *mcp.Server, getClient httpClientFunc) {
+	tool := inputSchema[listContactsIn](&mcp.Tool{
+		Name:        "list_contacts",
+		Description: "List contacts for the authenticated user.",
+	}, func(sch *jsonschema.Schema) {
+		setEnum(sch, "sort_order", "LAST_MODIFIED_ASCENDING", "LAST_MODIFIED_DESCENDING", "FIRST_NAME_ASCENDING", "LAST_NAME_ASCENDING")
+	})
+	mcp.AddTool(s, tool, handleListContacts(getClient))
+}
+
+func handleListContacts(getClient httpClientFunc) mcp.ToolHandlerFor[listContactsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listContactsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
-		pageSize := request.GetInt("page_size", 100)
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 100
+		}
 		if pageSize > 1000 {
 			pageSize = 1000
 		}
-		pageToken := request.GetString("page_token", "")
-		sortOrder := request.GetString("sort_order", "")
+		pageToken := in.PageToken
+		sortOrder := in.SortOrder
 
 		call := svc.People.Connections.List("people/me").
 			PersonFields(defaultPersonFields).
@@ -251,12 +263,12 @@ func registerListContacts(s *mcpserver.MCPServer, getClient httpClientFunc) {
 
 		result, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing contacts: %v", err)), nil
+			return nil, nil, toolErr("listing contacts: %v", err)
 		}
 
 		connections := result.Connections
 		if len(connections) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No contacts found for %s.", email)), nil
+			return textResult(fmt.Sprintf("No contacts found for %s.", email))
 		}
 
 		totalPeople := int(result.TotalPeople)
@@ -276,30 +288,32 @@ func registerListContacts(s *mcpserver.MCPServer, getClient httpClientFunc) {
 			fmt.Fprintf(&sb, "Next page token: %s", result.NextPageToken)
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
 // get_contact
 // ---------------------------------------------------------------------------
 
-func registerGetContact(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_contact",
-		mcp.WithDescription("Get detailed information about a specific contact."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("contact_id", mcp.Required(), mcp.Description("The contact ID (e.g., \"c1234567890\" or full resource name \"people/c1234567890\").")),
-	)
+// getContactIn is the input schema for get_contact.
+type getContactIn struct {
+	ContactID       string `json:"contact_id" jsonschema:"The contact ID (e.g., \"c1234567890\" or full resource name \"people/c1234567890\")."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerGetContact(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "get_contact", Description: "Get detailed information about a specific contact."}
+	mcp.AddTool(s, tool, handleGetContact(getClient))
+}
+
+func handleGetContact(getClient httpClientFunc) mcp.ToolHandlerFor[getContactIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getContactIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		contactID, err := request.RequireString("contact_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		contactID := in.ContactID
 
 		// Normalize resource name
 		resourceName := contactID
@@ -309,53 +323,58 @@ func registerGetContact(s *mcpserver.MCPServer, getClient httpClientFunc) {
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		person, err := svc.People.Get(resourceName).PersonFields(detailedPersonFields).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting contact %s: %v", contactID, err)), nil
+			return nil, nil, toolErr("getting contact %s: %v", contactID, err)
 		}
 
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Contact Details for %s:\n\n", email)
 		sb.WriteString(formatContact(person, true))
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
 // search_contacts
 // ---------------------------------------------------------------------------
 
-func registerSearchContacts(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("search_contacts",
-		mcp.WithDescription("Search contacts by name, email, phone number, or other fields."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Search query string (searches names, emails, phone numbers).")),
-		mcp.WithNumber("page_size", mcp.Description("Maximum number of results to return (default: 30, max: 30).")),
-	)
+// searchContactsIn is the input schema for search_contacts.
+type searchContactsIn struct {
+	Query           string `json:"query" jsonschema:"Search query string (searches names, emails, phone numbers)."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	PageSize        int    `json:"page_size,omitempty" jsonschema:"Maximum number of results to return (default: 30, max: 30)."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerSearchContacts(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "search_contacts", Description: "Search contacts by name, email, phone number, or other fields."}
+	mcp.AddTool(s, tool, handleSearchContacts(getClient))
+}
+
+func handleSearchContacts(getClient httpClientFunc) mcp.ToolHandlerFor[searchContactsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchContactsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		query, err := request.RequireString("query")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		query := in.Query
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Warm up the search cache if needed
 		warmupSearchCache(svc, email)
 
-		pageSize := request.GetInt("page_size", 30)
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 30
+		}
 		if pageSize > 30 {
 			pageSize = 30
 		}
@@ -366,12 +385,12 @@ func registerSearchContacts(s *mcpserver.MCPServer, getClient httpClientFunc) {
 			PageSize(int64(pageSize)).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("searching contacts: %v", err)), nil
+			return nil, nil, toolErr("searching contacts: %v", err)
 		}
 
 		results := result.Results
 		if len(results) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No contacts found matching '%s' for %s.", query, email)), nil
+			return textResult(fmt.Sprintf("No contacts found matching '%s' for %s.", query, email))
 		}
 
 		var sb strings.Builder
@@ -382,38 +401,46 @@ func registerSearchContacts(s *mcpserver.MCPServer, getClient httpClientFunc) {
 			sb.WriteString("\n\n")
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
 // list_contact_groups
 // ---------------------------------------------------------------------------
 
-func registerListContactGroups(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_contact_groups",
-		mcp.WithDescription("List contact groups (labels) for the user."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithNumber("page_size", mcp.Description("Maximum number of groups to return (default: 100, max: 1000).")),
-		mcp.WithString("page_token", mcp.Description("Token for pagination.")),
-	)
+// listContactGroupsIn is the input schema for list_contact_groups.
+type listContactGroupsIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	PageSize        int    `json:"page_size,omitempty" jsonschema:"Maximum number of groups to return (default: 100, max: 1000)."`
+	PageToken       string `json:"page_token,omitempty" jsonschema:"Token for pagination."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerListContactGroups(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "list_contact_groups", Description: "List contact groups (labels) for the user."}
+	mcp.AddTool(s, tool, handleListContactGroups(getClient))
+}
+
+func handleListContactGroups(getClient httpClientFunc) mcp.ToolHandlerFor[listContactGroupsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listContactGroupsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
-		pageSize := request.GetInt("page_size", 100)
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 100
+		}
 		if pageSize > 1000 {
 			pageSize = 1000
 		}
-		pageToken := request.GetString("page_token", "")
+		pageToken := in.PageToken
 
 		call := svc.ContactGroups.List().
 			PageSize(int64(pageSize)).
@@ -425,12 +452,12 @@ func registerListContactGroups(s *mcpserver.MCPServer, getClient httpClientFunc)
 
 		result, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing contact groups: %v", err)), nil
+			return nil, nil, toolErr("listing contact groups: %v", err)
 		}
 
 		groups := result.ContactGroups
 		if len(groups) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No contact groups found for %s.", email)), nil
+			return textResult(fmt.Sprintf("No contact groups found for %s.", email))
 		}
 
 		var sb strings.Builder
@@ -457,8 +484,8 @@ func registerListContactGroups(s *mcpserver.MCPServer, getClient httpClientFunc)
 			fmt.Fprintf(&sb, "Next page token: %s", result.NextPageToken)
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // normalizeContactResourceName ensures a contact ID is prefixed with "people/".
@@ -553,23 +580,25 @@ func updatePersonFields(p *people.Person) string {
 // get_contact_group
 // ---------------------------------------------------------------------------
 
-func registerGetContactGroup(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_contact_group",
-		mcp.WithDescription("Get details of a specific contact group including its members."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("group_id", mcp.Required(), mcp.Description("The contact group ID.")),
-		mcp.WithNumber("max_members", mcp.Description("Maximum number of members to return (default: 100, max: 1000).")),
-	)
+// getContactGroupIn is the input schema for get_contact_group.
+type getContactGroupIn struct {
+	GroupID         string `json:"group_id" jsonschema:"The contact group ID."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	MaxMembers      int    `json:"max_members,omitempty" jsonschema:"Maximum number of members to return (default: 100, max: 1000)."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerGetContactGroup(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "get_contact_group", Description: "Get details of a specific contact group including its members."}
+	mcp.AddTool(s, tool, handleGetContactGroup(getClient))
+}
+
+func handleGetContactGroup(getClient httpClientFunc) mcp.ToolHandlerFor[getContactGroupIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getContactGroupIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		groupID, err := request.RequireString("group_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		groupID := in.GroupID
 
 		// Normalize resource name
 		resourceName := groupID
@@ -579,10 +608,13 @@ func registerGetContactGroup(s *mcpserver.MCPServer, getClient httpClientFunc) {
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
-		maxMembers := request.GetInt("max_members", 100)
+		maxMembers := in.MaxMembers
+		if maxMembers == 0 {
+			maxMembers = 100
+		}
 		if maxMembers > 1000 {
 			maxMembers = 1000
 		}
@@ -592,7 +624,7 @@ func registerGetContactGroup(s *mcpserver.MCPServer, getClient httpClientFunc) {
 			GroupFields(contactGroupFields).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting contact group %s: %v", groupID, err)), nil
+			return nil, nil, toolErr("getting contact group %s: %v", groupID, err)
 		}
 
 		name := result.Name
@@ -619,111 +651,134 @@ func registerGetContactGroup(s *mcpserver.MCPServer, getClient httpClientFunc) {
 			}
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
 // create_contact
 // ---------------------------------------------------------------------------
 
-func registerCreateContact(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_contact",
-		mcp.WithDescription("Create a new contact."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("given_name", mcp.Description("First name.")),
-		mcp.WithString("family_name", mcp.Description("Last name.")),
-		mcp.WithString("email", mcp.Description("Email address.")),
-		mcp.WithString("phone", mcp.Description("Phone number.")),
-		mcp.WithString("organization", mcp.Description("Company/organization name.")),
-		mcp.WithString("job_title", mcp.Description("Job title.")),
-		mcp.WithString("notes", mcp.Description("Additional notes.")),
-	)
+// createContactIn is the input schema for create_contact.
+type createContactIn struct {
+	GivenName       string `json:"given_name,omitempty" jsonschema:"First name."`
+	FamilyName      string `json:"family_name,omitempty" jsonschema:"Last name."`
+	Email           string `json:"email,omitempty" jsonschema:"Email address."`
+	Phone           string `json:"phone,omitempty" jsonschema:"Phone number."`
+	Organization    string `json:"organization,omitempty" jsonschema:"Company/organization name."`
+	JobTitle        string `json:"job_title,omitempty" jsonschema:"Job title."`
+	Notes           string `json:"notes,omitempty" jsonschema:"Additional notes."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerCreateContact(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "create_contact", Description: "Create a new contact."}
+	mcp.AddTool(s, tool, handleCreateContact(getClient))
+}
+
+func handleCreateContact(getClient httpClientFunc) mcp.ToolHandlerFor[createContactIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createContactIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
-		person := buildPersonBody(request.GetArguments())
+		person := buildPersonBody(map[string]any{
+			"given_name":   in.GivenName,
+			"family_name":  in.FamilyName,
+			"email":        in.Email,
+			"phone":        in.Phone,
+			"organization": in.Organization,
+			"job_title":    in.JobTitle,
+			"notes":        in.Notes,
+		})
 		if person == nil {
-			return mcp.NewToolResultError("At least one field (name, email, phone, etc.) must be provided."), nil
+			return nil, nil, toolErr("At least one field (name, email, phone, etc.) must be provided.")
 		}
 
 		result, err := svc.People.CreateContact(person).
 			PersonFields(detailedPersonFields).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating contact: %v", err)), nil
+			return nil, nil, toolErr("creating contact: %v", err)
 		}
 
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Contact Created for %s:\n\n", email)
 		sb.WriteString(formatContact(result, true))
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
 // update_contact
 // ---------------------------------------------------------------------------
 
-func registerUpdateContact(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("update_contact",
-		mcp.WithDescription("Update an existing contact. Note: This replaces fields, not merges them."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("contact_id", mcp.Required(), mcp.Description("The contact ID to update.")),
-		mcp.WithString("given_name", mcp.Description("New first name.")),
-		mcp.WithString("family_name", mcp.Description("New last name.")),
-		mcp.WithString("email", mcp.Description("New email address.")),
-		mcp.WithString("phone", mcp.Description("New phone number.")),
-		mcp.WithString("organization", mcp.Description("New company/organization name.")),
-		mcp.WithString("job_title", mcp.Description("New job title.")),
-		mcp.WithString("notes", mcp.Description("New notes.")),
-	)
+// updateContactIn is the input schema for update_contact.
+type updateContactIn struct {
+	ContactID       string `json:"contact_id" jsonschema:"The contact ID to update."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	GivenName       string `json:"given_name,omitempty" jsonschema:"New first name."`
+	FamilyName      string `json:"family_name,omitempty" jsonschema:"New last name."`
+	Email           string `json:"email,omitempty" jsonschema:"New email address."`
+	Phone           string `json:"phone,omitempty" jsonschema:"New phone number."`
+	Organization    string `json:"organization,omitempty" jsonschema:"New company/organization name."`
+	JobTitle        string `json:"job_title,omitempty" jsonschema:"New job title."`
+	Notes           string `json:"notes,omitempty" jsonschema:"New notes."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerUpdateContact(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "update_contact", Description: "Update an existing contact. Note: This replaces fields, not merges them."}
+	mcp.AddTool(s, tool, handleUpdateContact(getClient))
+}
+
+func handleUpdateContact(getClient httpClientFunc) mcp.ToolHandlerFor[updateContactIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateContactIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		contactID, err := request.RequireString("contact_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		contactID := in.ContactID
 
 		resourceName := normalizeContactResourceName(contactID)
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Fetch current contact for etag
 		current, err := svc.People.Get(resourceName).PersonFields(detailedPersonFields).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting contact %s: %v", contactID, err)), nil
+			return nil, nil, toolErr("getting contact %s: %v", contactID, err)
 		}
 		if current.Etag == "" {
-			return mcp.NewToolResultError("Unable to get contact etag for update."), nil
+			return nil, nil, toolErr("Unable to get contact etag for update.")
 		}
 
-		person := buildPersonBody(request.GetArguments())
+		person := buildPersonBody(map[string]any{
+			"given_name":   in.GivenName,
+			"family_name":  in.FamilyName,
+			"email":        in.Email,
+			"phone":        in.Phone,
+			"organization": in.Organization,
+			"job_title":    in.JobTitle,
+			"notes":        in.Notes,
+		})
 		if person == nil {
-			return mcp.NewToolResultError("At least one field (name, email, phone, etc.) must be provided."), nil
+			return nil, nil, toolErr("At least one field (name, email, phone, etc.) must be provided.")
 		}
 		person.Etag = current.Etag
 
 		upf := updatePersonFields(person)
 		if upf == "" {
-			return mcp.NewToolResultError("No fields to update."), nil
+			return nil, nil, toolErr("No fields to update.")
 		}
 
 		result, err := svc.People.UpdateContact(resourceName, person).
@@ -731,92 +786,92 @@ func registerUpdateContact(s *mcpserver.MCPServer, getClient httpClientFunc) {
 			PersonFields(detailedPersonFields).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("updating contact %s: %v", contactID, err)), nil
+			return nil, nil, toolErr("updating contact %s: %v", contactID, err)
 		}
 
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Contact Updated for %s:\n\n", email)
 		sb.WriteString(formatContact(result, true))
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
 // delete_contact
 // ---------------------------------------------------------------------------
 
-func registerDeleteContact(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("delete_contact",
-		mcp.WithDescription("Delete a contact."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("contact_id", mcp.Required(), mcp.Description("The contact ID to delete.")),
-	)
+// deleteContactIn is the input schema for delete_contact.
+type deleteContactIn struct {
+	ContactID       string `json:"contact_id" jsonschema:"The contact ID to delete."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerDeleteContact(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "delete_contact", Description: "Delete a contact."}
+	mcp.AddTool(s, tool, handleDeleteContact(getClient))
+}
+
+func handleDeleteContact(getClient httpClientFunc) mcp.ToolHandlerFor[deleteContactIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteContactIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		contactID, err := request.RequireString("contact_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		contactID := in.ContactID
 
 		resourceName := normalizeContactResourceName(contactID)
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		_, err = svc.People.DeleteContact(resourceName).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("deleting contact %s: %v", contactID, err)), nil
+			return nil, nil, toolErr("deleting contact %s: %v", contactID, err)
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Contact %s has been deleted for %s.", contactID, email)), nil
-	})
+		return textResult(fmt.Sprintf("Contact %s has been deleted for %s.", contactID, email))
+	}
 }
 
 // ---------------------------------------------------------------------------
 // batch_create_contacts
 // ---------------------------------------------------------------------------
 
-func registerBatchCreateContacts(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("batch_create_contacts",
-		mcp.WithDescription("Create multiple contacts in a batch operation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithArray("contacts", mcp.Required(), mcp.Description("List of contact objects with fields: given_name, family_name, email, phone, organization, job_title."),
-			mcp.Items(map[string]any{"type": "object"})),
-	)
+// batchCreateContactsIn is the input schema for batch_create_contacts.
+type batchCreateContactsIn struct {
+	Contacts        []map[string]any `json:"contacts" jsonschema:"List of contact objects with fields: given_name, family_name, email, phone, organization, job_title."`
+	UserGoogleEmail string           `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerBatchCreateContacts(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "batch_create_contacts", Description: "Create multiple contacts in a batch operation."}
+	mcp.AddTool(s, tool, handleBatchCreateContacts(getClient))
+}
+
+func handleBatchCreateContacts(getClient httpClientFunc) mcp.ToolHandlerFor[batchCreateContactsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in batchCreateContactsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
-		args := request.GetArguments()
-		contactsRaw, ok := args["contacts"].([]any)
-		if !ok || len(contactsRaw) == 0 {
-			return mcp.NewToolResultError("At least one contact must be provided."), nil
+		if len(in.Contacts) == 0 {
+			return nil, nil, toolErr("At least one contact must be provided.")
 		}
-		if len(contactsRaw) > 200 {
-			return mcp.NewToolResultError("Maximum 200 contacts can be created in a batch."), nil
+		if len(in.Contacts) > 200 {
+			return nil, nil, toolErr("Maximum 200 contacts can be created in a batch.")
 		}
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		var contacts []*people.ContactToCreate
-		for _, raw := range contactsRaw {
-			m, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
+		for _, m := range in.Contacts {
 			person := buildPersonBody(m)
 			if person != nil {
 				contacts = append(contacts, &people.ContactToCreate{ContactPerson: person})
@@ -824,7 +879,7 @@ func registerBatchCreateContacts(s *mcpserver.MCPServer, getClient httpClientFun
 		}
 
 		if len(contacts) == 0 {
-			return mcp.NewToolResultError("No valid contact data provided."), nil
+			return nil, nil, toolErr("No valid contact data provided.")
 		}
 
 		result, err := svc.People.BatchCreateContacts(&people.BatchCreateContactsRequest{
@@ -832,7 +887,7 @@ func registerBatchCreateContacts(s *mcpserver.MCPServer, getClient httpClientFun
 			ReadMask: defaultPersonFields,
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("batch creating contacts: %v", err)), nil
+			return nil, nil, toolErr("batch creating contacts: %v", err)
 		}
 
 		var sb strings.Builder
@@ -846,52 +901,50 @@ func registerBatchCreateContacts(s *mcpserver.MCPServer, getClient httpClientFun
 			}
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
 // batch_update_contacts
 // ---------------------------------------------------------------------------
 
-func registerBatchUpdateContacts(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("batch_update_contacts",
-		mcp.WithDescription("Update multiple contacts in a batch operation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithArray("updates", mcp.Required(), mcp.Description("List of update objects with fields: contact_id (required), given_name, family_name, email, phone, organization, job_title."),
-			mcp.Items(map[string]any{"type": "object"})),
-	)
+// batchUpdateContactsIn is the input schema for batch_update_contacts.
+type batchUpdateContactsIn struct {
+	Updates         []map[string]any `json:"updates" jsonschema:"List of update objects with fields: contact_id (required), given_name, family_name, email, phone, organization, job_title."`
+	UserGoogleEmail string           `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerBatchUpdateContacts(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "batch_update_contacts", Description: "Update multiple contacts in a batch operation."}
+	mcp.AddTool(s, tool, handleBatchUpdateContacts(getClient))
+}
+
+func handleBatchUpdateContacts(getClient httpClientFunc) mcp.ToolHandlerFor[batchUpdateContactsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in batchUpdateContactsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
-		args := request.GetArguments()
-		updatesRaw, ok := args["updates"].([]any)
-		if !ok || len(updatesRaw) == 0 {
-			return mcp.NewToolResultError("At least one update must be provided."), nil
+		if len(in.Updates) == 0 {
+			return nil, nil, toolErr("At least one update must be provided.")
 		}
-		if len(updatesRaw) > 200 {
-			return mcp.NewToolResultError("Maximum 200 contacts can be updated in a batch."), nil
+		if len(in.Updates) > 200 {
+			return nil, nil, toolErr("Maximum 200 contacts can be updated in a batch.")
 		}
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Collect resource names for batch etag lookup
 		var resourceNames []string
-		for _, raw := range updatesRaw {
-			m, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
+		for _, m := range in.Updates {
 			cid, _ := m["contact_id"].(string)
 			if cid == "" {
-				return mcp.NewToolResultError("Each update must include a contact_id."), nil
+				return nil, nil, toolErr("Each update must include a contact_id.")
 			}
 			resourceNames = append(resourceNames, normalizeContactResourceName(cid))
 		}
@@ -902,7 +955,7 @@ func registerBatchUpdateContacts(s *mcpserver.MCPServer, getClient httpClientFun
 			PersonFields("metadata").
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("fetching contact etags: %v", err)), nil
+			return nil, nil, toolErr("fetching contact etags: %v", err)
 		}
 
 		etags := make(map[string]string)
@@ -916,11 +969,7 @@ func registerBatchUpdateContacts(s *mcpserver.MCPServer, getClient httpClientFun
 		contactsMap := make(map[string]people.Person)
 		updateFieldsSet := make(map[string]bool)
 
-		for _, raw := range updatesRaw {
-			m, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
+		for _, m := range in.Updates {
 			cid, _ := m["contact_id"].(string)
 			rn := normalizeContactResourceName(cid)
 
@@ -947,7 +996,7 @@ func registerBatchUpdateContacts(s *mcpserver.MCPServer, getClient httpClientFun
 		}
 
 		if len(contactsMap) == 0 {
-			return mcp.NewToolResultError("No valid update data provided."), nil
+			return nil, nil, toolErr("No valid update data provided.")
 		}
 
 		var updateMaskParts []string
@@ -961,7 +1010,7 @@ func registerBatchUpdateContacts(s *mcpserver.MCPServer, getClient httpClientFun
 			ReadMask:   defaultPersonFields,
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("batch updating contacts: %v", err)), nil
+			return nil, nil, toolErr("batch updating contacts: %v", err)
 		}
 
 		var sb strings.Builder
@@ -975,42 +1024,43 @@ func registerBatchUpdateContacts(s *mcpserver.MCPServer, getClient httpClientFun
 			}
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
 // batch_delete_contacts
 // ---------------------------------------------------------------------------
 
-func registerBatchDeleteContacts(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("batch_delete_contacts",
-		mcp.WithDescription("Delete multiple contacts in a batch operation."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithArray("contact_ids", mcp.Required(), mcp.Description("List of contact IDs to delete."),
-			mcp.Items(map[string]any{"type": "string"})),
-	)
+// batchDeleteContactsIn is the input schema for batch_delete_contacts.
+type batchDeleteContactsIn struct {
+	ContactIDs      []string `json:"contact_ids" jsonschema:"List of contact IDs to delete."`
+	UserGoogleEmail string   `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerBatchDeleteContacts(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "batch_delete_contacts", Description: "Delete multiple contacts in a batch operation."}
+	mcp.AddTool(s, tool, handleBatchDeleteContacts(getClient))
+}
+
+func handleBatchDeleteContacts(getClient httpClientFunc) mcp.ToolHandlerFor[batchDeleteContactsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in batchDeleteContactsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
-		contactIDs, err := request.RequireStringSlice("contact_ids")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		contactIDs := in.ContactIDs
 		if len(contactIDs) == 0 {
-			return mcp.NewToolResultError("At least one contact ID must be provided."), nil
+			return nil, nil, toolErr("At least one contact ID must be provided.")
 		}
 		if len(contactIDs) > 500 {
-			return mcp.NewToolResultError("Maximum 500 contacts can be deleted in a batch."), nil
+			return nil, nil, toolErr("Maximum 500 contacts can be deleted in a batch.")
 		}
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		resourceNames := make([]string, len(contactIDs))
@@ -1022,44 +1072,46 @@ func registerBatchDeleteContacts(s *mcpserver.MCPServer, getClient httpClientFun
 			ResourceNames: resourceNames,
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("batch deleting contacts: %v", err)), nil
+			return nil, nil, toolErr("batch deleting contacts: %v", err)
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Batch deleted %d contacts for %s.", len(contactIDs), email)), nil
-	})
+		return textResult(fmt.Sprintf("Batch deleted %d contacts for %s.", len(contactIDs), email))
+	}
 }
 
 // ---------------------------------------------------------------------------
 // create_contact_group
 // ---------------------------------------------------------------------------
 
-func registerCreateContactGroup(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_contact_group",
-		mcp.WithDescription("Create a new contact group (label)."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("name", mcp.Required(), mcp.Description("The name of the new contact group.")),
-	)
+// createContactGroupIn is the input schema for create_contact_group.
+type createContactGroupIn struct {
+	Name            string `json:"name" jsonschema:"The name of the new contact group."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerCreateContactGroup(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "create_contact_group", Description: "Create a new contact group (label)."}
+	mcp.AddTool(s, tool, handleCreateContactGroup(getClient))
+}
+
+func handleCreateContactGroup(getClient httpClientFunc) mcp.ToolHandlerFor[createContactGroupIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createContactGroupIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		name, err := request.RequireString("name")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		name := in.Name
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		result, err := svc.ContactGroups.Create(&people.CreateContactGroupRequest{
 			ContactGroup: &people.ContactGroup{Name: name},
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating contact group: %v", err)), nil
+			return nil, nil, toolErr("creating contact group: %v", err)
 		}
 
 		groupID := strings.TrimPrefix(result.ResourceName, "contactGroups/")
@@ -1078,48 +1130,47 @@ func registerCreateContactGroup(s *mcpserver.MCPServer, getClient httpClientFunc
 		fmt.Fprintf(&sb, "ID: %s\n", groupID)
 		fmt.Fprintf(&sb, "Type: %s\n", groupType)
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
 // update_contact_group
 // ---------------------------------------------------------------------------
 
-func registerUpdateContactGroup(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("update_contact_group",
-		mcp.WithDescription("Update a contact group's name."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("group_id", mcp.Required(), mcp.Description("The contact group ID to update.")),
-		mcp.WithString("name", mcp.Required(), mcp.Description("The new name for the contact group.")),
-	)
+// updateContactGroupIn is the input schema for update_contact_group.
+type updateContactGroupIn struct {
+	GroupID         string `json:"group_id" jsonschema:"The contact group ID to update."`
+	Name            string `json:"name" jsonschema:"The new name for the contact group."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerUpdateContactGroup(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "update_contact_group", Description: "Update a contact group's name."}
+	mcp.AddTool(s, tool, handleUpdateContactGroup(getClient))
+}
+
+func handleUpdateContactGroup(getClient httpClientFunc) mcp.ToolHandlerFor[updateContactGroupIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateContactGroupIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		groupID, err := request.RequireString("group_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		name, err := request.RequireString("name")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		groupID := in.GroupID
+		name := in.Name
 
 		resourceName := normalizeGroupResourceName(groupID)
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		result, err := svc.ContactGroups.Update(resourceName, &people.UpdateContactGroupRequest{
 			ContactGroup: &people.ContactGroup{Name: name},
 		}).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("updating contact group %s: %v", groupID, err)), nil
+			return nil, nil, toolErr("updating contact group %s: %v", groupID, err)
 		}
 
 		updatedName := result.Name
@@ -1132,45 +1183,47 @@ func registerUpdateContactGroup(s *mcpserver.MCPServer, getClient httpClientFunc
 		fmt.Fprintf(&sb, "Name: %s\n", updatedName)
 		fmt.Fprintf(&sb, "ID: %s\n", groupID)
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
 // delete_contact_group
 // ---------------------------------------------------------------------------
 
-func registerDeleteContactGroup(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("delete_contact_group",
-		mcp.WithDescription("Delete a contact group."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("group_id", mcp.Required(), mcp.Description("The contact group ID to delete.")),
-		mcp.WithBoolean("delete_contacts", mcp.Description("If true, also delete contacts in the group (default: false).")),
-	)
+// deleteContactGroupIn is the input schema for delete_contact_group.
+type deleteContactGroupIn struct {
+	GroupID         string `json:"group_id" jsonschema:"The contact group ID to delete."`
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	DeleteContacts  bool   `json:"delete_contacts,omitempty" jsonschema:"If true, also delete contacts in the group (default: false)."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerDeleteContactGroup(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "delete_contact_group", Description: "Delete a contact group."}
+	mcp.AddTool(s, tool, handleDeleteContactGroup(getClient))
+}
+
+func handleDeleteContactGroup(getClient httpClientFunc) mcp.ToolHandlerFor[deleteContactGroupIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteContactGroupIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		groupID, err := request.RequireString("group_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		groupID := in.GroupID
 
 		resourceName := normalizeGroupResourceName(groupID)
-		deleteContacts := getBool(request, "delete_contacts", false)
+		deleteContacts := in.DeleteContacts
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		_, err = svc.ContactGroups.Delete(resourceName).
 			DeleteContacts(deleteContacts).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("deleting contact group %s: %v", groupID, err)), nil
+			return nil, nil, toolErr("deleting contact group %s: %v", groupID, err)
 		}
 
 		msg := fmt.Sprintf("Contact group %s has been deleted for %s.", groupID, email)
@@ -1180,47 +1233,47 @@ func registerDeleteContactGroup(s *mcpserver.MCPServer, getClient httpClientFunc
 			msg += " Contacts in the group were preserved."
 		}
 
-		return mcp.NewToolResultText(msg), nil
-	})
+		return textResult(msg)
+	}
 }
 
 // ---------------------------------------------------------------------------
 // modify_contact_group_members
 // ---------------------------------------------------------------------------
 
-func registerModifyContactGroupMembers(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("modify_contact_group_members",
-		mcp.WithDescription("Add or remove contacts from a contact group."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("group_id", mcp.Required(), mcp.Description("The contact group ID.")),
-		mcp.WithArray("add_contact_ids", mcp.Description("Contact IDs to add to the group."),
-			mcp.Items(map[string]any{"type": "string"})),
-		mcp.WithArray("remove_contact_ids", mcp.Description("Contact IDs to remove from the group."),
-			mcp.Items(map[string]any{"type": "string"})),
-	)
+// modifyContactGroupMembersIn is the input schema for modify_contact_group_members.
+type modifyContactGroupMembersIn struct {
+	GroupID          string   `json:"group_id" jsonschema:"The contact group ID."`
+	UserGoogleEmail  string   `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	AddContactIDs    []string `json:"add_contact_ids,omitempty" jsonschema:"Contact IDs to add to the group."`
+	RemoveContactIDs []string `json:"remove_contact_ids,omitempty" jsonschema:"Contact IDs to remove from the group."`
+}
 
-	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerModifyContactGroupMembers(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{Name: "modify_contact_group_members", Description: "Add or remove contacts from a contact group."}
+	mcp.AddTool(s, tool, handleModifyContactGroupMembers(getClient))
+}
+
+func handleModifyContactGroupMembers(getClient httpClientFunc) mcp.ToolHandlerFor[modifyContactGroupMembersIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in modifyContactGroupMembersIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		groupID, err := request.RequireString("group_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+		groupID := in.GroupID
 
 		resourceName := normalizeGroupResourceName(groupID)
 
-		addIDs := getStringSlice(request, "add_contact_ids")
-		removeIDs := getStringSlice(request, "remove_contact_ids")
+		addIDs := in.AddContactIDs
+		removeIDs := in.RemoveContactIDs
 
 		if len(addIDs) == 0 && len(removeIDs) == 0 {
-			return mcp.NewToolResultError("At least one of add_contact_ids or remove_contact_ids must be provided."), nil
+			return nil, nil, toolErr("At least one of add_contact_ids or remove_contact_ids must be provided.")
 		}
 
 		svc, err := newPeopleService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		body := &people.ModifyContactGroupMembersRequest{}
@@ -1242,7 +1295,7 @@ func registerModifyContactGroupMembers(s *mcpserver.MCPServer, getClient httpCli
 
 		result, err := svc.ContactGroups.Members.Modify(resourceName, body).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("modifying contact group members %s: %v", groupID, err)), nil
+			return nil, nil, toolErr("modifying contact group members %s: %v", groupID, err)
 		}
 
 		var sb strings.Builder
@@ -1263,7 +1316,6 @@ func registerModifyContactGroupMembers(s *mcpserver.MCPServer, getClient httpCli
 			fmt.Fprintf(&sb, "\nCannot remove (last group): %s\n", strings.Join(result.CanNotRemoveLastContactGroupResourceNames, ", "))
 		}
 
-		return mcp.NewToolResultText(sb.String()), nil
-	})
+		return textResult(sb.String())
+	}
 }
-

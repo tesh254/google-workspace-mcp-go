@@ -9,8 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	forms "google.golang.org/api/forms/v1"
 
 	"github.com/magks/google-workspace-mcp-go/internal/google"
@@ -18,7 +17,7 @@ import (
 )
 
 // RegisterFormsTools registers all Forms tools with the MCP server.
-func RegisterFormsTools(s *mcpserver.MCPServer, _ server.Config) {
+func RegisterFormsTools(s *mcp.Server, _ server.Config) {
 	getClient := clientFuncFromCache(google.DefaultClientCache())
 
 	registerCreateForm(s, getClient)
@@ -44,34 +43,36 @@ func newFormsService(ctx context.Context, getClient httpClientFunc, email string
 
 // --- create_form ---
 
-func registerCreateForm(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("create_form",
-		mcp.WithDescription("Create a new Google Form with the specified title and optional description."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("title", mcp.Required(), mcp.Description("The title of the form.")),
-		mcp.WithString("description", mcp.Description("The description of the form.")),
-		mcp.WithString("document_title", mcp.Description("The document title (shown in browser tab).")),
-	)
-	s.AddTool(tool, handleCreateForm(getClient))
+// createFormIn is the input schema for create_form.
+type createFormIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	Title           string `json:"title" jsonschema:"The title of the form."`
+	Description     string `json:"description,omitempty" jsonschema:"The description of the form."`
+	DocumentTitle   string `json:"document_title,omitempty" jsonschema:"The document title (shown in browser tab)."`
 }
 
-func handleCreateForm(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		title, err := request.RequireString("title")
-		if err != nil {
-			return mcp.NewToolResultError("title is required"), nil
-		}
+func registerCreateForm(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "create_form",
+		Description: "Create a new Google Form with the specified title and optional description.",
+	}
+	mcp.AddTool(s, tool, handleCreateForm(getClient))
+}
 
-		description := request.GetString("description", "")
-		documentTitle := request.GetString("document_title", "")
+func handleCreateForm(getClient httpClientFunc) mcp.ToolHandlerFor[createFormIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in createFormIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		title := in.Title
+
+		description := in.Description
+		documentTitle := in.DocumentTitle
 
 		svc, err := newFormsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		formBody := &forms.Form{
@@ -90,7 +91,7 @@ func handleCreateForm(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		created, err := svc.Forms.Create(formBody).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating form: %v", err)), nil
+			return nil, nil, toolErr("creating form: %v", err)
 		}
 
 		formID := created.FormId
@@ -108,40 +109,42 @@ func handleCreateForm(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		result := fmt.Sprintf("Successfully created form '%s' for %s. Form ID: %s. Edit URL: %s. Responder URL: %s",
 			createdTitle, email, formID, editURL, responderURL)
 
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
 // --- get_form ---
 
-func registerGetForm(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_form",
-		mcp.WithDescription("Get a Google Form's details including title, description, questions, and URLs."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("form_id", mcp.Required(), mcp.Description("The ID of the form to retrieve.")),
-	)
-	s.AddTool(tool, handleGetForm(getClient))
+// getFormIn is the input schema for get_form.
+type getFormIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	FormID          string `json:"form_id" jsonschema:"The ID of the form to retrieve."`
 }
 
-func handleGetForm(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerGetForm(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_form",
+		Description: "Get a Google Form's details including title, description, questions, and URLs.",
+	}
+	mcp.AddTool(s, tool, handleGetForm(getClient))
+}
+
+func handleGetForm(getClient httpClientFunc) mcp.ToolHandlerFor[getFormIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getFormIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		formID, err := request.RequireString("form_id")
-		if err != nil {
-			return mcp.NewToolResultError("form_id is required"), nil
-		}
+		formID := in.FormID
 
 		svc, err := newFormsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		form, err := svc.Forms.Get(formID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting form: %v", err)), nil
+			return nil, nil, toolErr("getting form: %v", err)
 		}
 
 		title := "No Title"
@@ -196,42 +199,44 @@ func handleGetForm(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 - Questions (%d total):
 %s`, email, title, description, documentTitle, formID, editURL, responderURL, len(items), questionsText)
 
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
 // --- set_publish_settings ---
 
-func registerSetPublishSettings(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("set_publish_settings",
-		mcp.WithDescription("Updates the publish settings of a Google Form."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("form_id", mcp.Required(), mcp.Description("The ID of the form to update publish settings for.")),
-		mcp.WithBoolean("publish_as_template", mcp.Description("Whether to publish as a template. Defaults to false.")),
-		mcp.WithBoolean("require_authentication", mcp.Description("Whether to require authentication to view/submit. Defaults to false.")),
-	)
-	s.AddTool(tool, handleSetPublishSettings(getClient))
+// setPublishSettingsIn is the input schema for set_publish_settings.
+type setPublishSettingsIn struct {
+	UserGoogleEmail       string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	FormID                string `json:"form_id" jsonschema:"The ID of the form to update publish settings for."`
+	PublishAsTemplate     bool   `json:"publish_as_template,omitempty" jsonschema:"Whether to publish as a template. Defaults to false."`
+	RequireAuthentication bool   `json:"require_authentication,omitempty" jsonschema:"Whether to require authentication to view/submit. Defaults to false."`
 }
 
-func handleSetPublishSettings(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		formID, err := request.RequireString("form_id")
-		if err != nil {
-			return mcp.NewToolResultError("form_id is required"), nil
-		}
+func registerSetPublishSettings(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "set_publish_settings",
+		Description: "Updates the publish settings of a Google Form.",
+	}
+	mcp.AddTool(s, tool, handleSetPublishSettings(getClient))
+}
 
-		publishAsTemplate := getBool(request, "publish_as_template", false)
-		requireAuthentication := getBool(request, "require_authentication", false)
+func handleSetPublishSettings(getClient httpClientFunc) mcp.ToolHandlerFor[setPublishSettingsIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in setPublishSettingsIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		formID := in.FormID
+
+		publishAsTemplate := in.PublishAsTemplate
+		requireAuthentication := in.RequireAuthentication
 
 		// The setPublishSettings endpoint is not in the generated Go Forms client library.
 		// We make a raw HTTP call to the REST API.
 		httpClient, err := getClient(ctx, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authenticating for %s: %v", email, err)), nil
+			return nil, nil, toolErr("authenticating for %s: %v", email, err)
 		}
 
 		settingsBody := map[string]bool{
@@ -240,69 +245,68 @@ func handleSetPublishSettings(getClient httpClientFunc) mcpserver.ToolHandlerFun
 		}
 		bodyJSON, err := json.Marshal(settingsBody)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("marshaling request body: %v", err)), nil
+			return nil, nil, toolErr("marshaling request body: %v", err)
 		}
 
 		url := fmt.Sprintf("https://forms.googleapis.com/v1/forms/%s:setPublishSettings", formID)
 		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyJSON))
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating request: %v", err)), nil
+			return nil, nil, toolErr("creating request: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("setting publish settings: %v", err)), nil
+			return nil, nil, toolErr("setting publish settings: %v", err)
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			respBody, _ := io.ReadAll(resp.Body)
-			return mcp.NewToolResultError(fmt.Sprintf("setting publish settings (HTTP %d): %s", resp.StatusCode, string(respBody))), nil
+			return nil, nil, toolErr("setting publish settings (HTTP %d): %s", resp.StatusCode, string(respBody))
 		}
 
 		result := fmt.Sprintf("Successfully updated publish settings for form %s for %s. Publish as template: %t, Require authentication: %t",
 			formID, email, publishAsTemplate, requireAuthentication)
 
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
 // --- get_form_response ---
 
-func registerGetFormResponse(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_form_response",
-		mcp.WithDescription("Get a single response from a Google Form by response ID."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("form_id", mcp.Required(), mcp.Description("The ID of the form.")),
-		mcp.WithString("response_id", mcp.Required(), mcp.Description("The ID of the response to retrieve.")),
-	)
-	s.AddTool(tool, handleGetFormResponse(getClient))
+// getFormResponseIn is the input schema for get_form_response.
+type getFormResponseIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	FormID          string `json:"form_id" jsonschema:"The ID of the form."`
+	ResponseID      string `json:"response_id" jsonschema:"The ID of the response to retrieve."`
 }
 
-func handleGetFormResponse(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerGetFormResponse(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_form_response",
+		Description: "Get a single response from a Google Form by response ID.",
+	}
+	mcp.AddTool(s, tool, handleGetFormResponse(getClient))
+}
+
+func handleGetFormResponse(getClient httpClientFunc) mcp.ToolHandlerFor[getFormResponseIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getFormResponseIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		formID, err := request.RequireString("form_id")
-		if err != nil {
-			return mcp.NewToolResultError("form_id is required"), nil
-		}
-		responseID, err := request.RequireString("response_id")
-		if err != nil {
-			return mcp.NewToolResultError("response_id is required"), nil
-		}
+		formID := in.FormID
+		responseID := in.ResponseID
 
 		svc, err := newFormsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		formResp, err := svc.Forms.Responses.Get(formID, responseID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting form response: %v", err)), nil
+			return nil, nil, toolErr("getting form response: %v", err)
 		}
 
 		respID := formResp.ResponseId
@@ -344,40 +348,45 @@ func handleGetFormResponse(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 - Answers:
 %s`, email, formID, respID, createTime, lastSubmittedTime, answersText)
 
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
 // --- list_form_responses ---
 
-func registerListFormResponses(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_form_responses",
-		mcp.WithDescription("List responses for a Google Form with pagination support."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("form_id", mcp.Required(), mcp.Description("The ID of the form.")),
-		mcp.WithNumber("page_size", mcp.Description("Maximum number of responses to return. Defaults to 10.")),
-		mcp.WithString("page_token", mcp.Description("Token for retrieving next page of results.")),
-	)
-	s.AddTool(tool, handleListFormResponses(getClient))
+// listFormResponsesIn is the input schema for list_form_responses.
+type listFormResponsesIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	FormID          string `json:"form_id" jsonschema:"The ID of the form."`
+	PageSize        int    `json:"page_size,omitempty" jsonschema:"Maximum number of responses to return. Defaults to 10."`
+	PageToken       string `json:"page_token,omitempty" jsonschema:"Token for retrieving next page of results."`
 }
 
-func handleListFormResponses(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		formID, err := request.RequireString("form_id")
-		if err != nil {
-			return mcp.NewToolResultError("form_id is required"), nil
-		}
+func registerListFormResponses(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "list_form_responses",
+		Description: "List responses for a Google Form with pagination support.",
+	}
+	mcp.AddTool(s, tool, handleListFormResponses(getClient))
+}
 
-		pageSize := request.GetInt("page_size", 10)
-		pageToken := request.GetString("page_token", "")
+func handleListFormResponses(getClient httpClientFunc) mcp.ToolHandlerFor[listFormResponsesIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listFormResponsesIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		formID := in.FormID
+
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 10
+		}
+		pageToken := in.PageToken
 
 		svc, err := newFormsService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		call := svc.Forms.Responses.List(formID).PageSize(int64(pageSize))
@@ -387,12 +396,12 @@ func handleListFormResponses(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 
 		resp, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing form responses: %v", err)), nil
+			return nil, nil, toolErr("listing form responses: %v", err)
 		}
 
 		responses := resp.Responses
 		if len(responses) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No responses found for form %s for %s.", formID, email)), nil
+			return textResult(fmt.Sprintf("No responses found for form %s for %s.", formID, email))
 		}
 
 		var responseDetails []string
@@ -425,51 +434,47 @@ func handleListFormResponses(getClient httpClientFunc) mcpserver.ToolHandlerFunc
 - Responses:
 %s%s`, email, formID, len(responses), strings.Join(responseDetails, "\n"), paginationInfo)
 
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
 // --- batch_update_form ---
 
-func registerBatchUpdateForm(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("batch_update_form",
-		mcp.WithDescription("Apply batch updates to a Google Form. Supports adding, updating, and deleting form items, as well as updating form metadata and settings."),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString("form_id", mcp.Required(), mcp.Description("The ID of the form to update.")),
-		mcp.WithArray("requests", mcp.Required(), mcp.Description("List of update requests to apply. Supported types: createItem, updateItem, deleteItem, moveItem, updateFormInfo, updateSettings."), mcp.Items(map[string]any{"type": "object"})),
-	)
-	s.AddTool(tool, handleBatchUpdateForm(getClient))
+// batchUpdateFormIn is the input schema for batch_update_form.
+type batchUpdateFormIn struct {
+	UserGoogleEmail string           `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	FormID          string           `json:"form_id" jsonschema:"The ID of the form to update."`
+	Requests        []map[string]any `json:"requests" jsonschema:"List of update requests to apply. Supported types: createItem, updateItem, deleteItem, moveItem, updateFormInfo, updateSettings."`
 }
 
-func handleBatchUpdateForm(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func registerBatchUpdateForm(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "batch_update_form",
+		Description: "Apply batch updates to a Google Form. Supports adding, updating, and deleting form items, as well as updating form metadata and settings.",
+	}
+	mcp.AddTool(s, tool, handleBatchUpdateForm(getClient))
+}
+
+func handleBatchUpdateForm(getClient httpClientFunc) mcp.ToolHandlerFor[batchUpdateFormIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in batchUpdateFormIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
-		formID, err := request.RequireString("form_id")
-		if err != nil {
-			return mcp.NewToolResultError("form_id is required"), nil
-		}
+		formID := in.FormID
 
 		// Extract raw requests array — we pass these as raw JSON to the API
 		// since the request format is complex and varies by operation type.
-		args := request.GetArguments()
-		rawRequests, ok := args["requests"]
-		if !ok {
-			return mcp.NewToolResultError("requests is required"), nil
-		}
-
-		requestsList, ok := rawRequests.([]any)
-		if !ok {
-			return mcp.NewToolResultError("requests must be an array"), nil
+		requestsList := in.Requests
+		if requestsList == nil {
+			return nil, nil, toolErr("requests is required")
 		}
 
 		// Use raw HTTP to send the batch update, since the typed Go structs
 		// would require converting each request map into the proper struct.
 		httpClient, err := getClient(ctx, email)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("authenticating for %s: %v", email, err)), nil
+			return nil, nil, toolErr("authenticating for %s: %v", email, err)
 		}
 
 		body := map[string]any{
@@ -477,29 +482,29 @@ func handleBatchUpdateForm(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		}
 		bodyJSON, err := json.Marshal(body)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("marshaling request body: %v", err)), nil
+			return nil, nil, toolErr("marshaling request body: %v", err)
 		}
 
 		url := fmt.Sprintf("https://forms.googleapis.com/v1/forms/%s:batchUpdate", formID)
 		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyJSON))
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating request: %v", err)), nil
+			return nil, nil, toolErr("creating request: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("batch updating form: %v", err)), nil
+			return nil, nil, toolErr("batch updating form: %v", err)
 		}
 		defer resp.Body.Close()
 
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("reading response: %v", err)), nil
+			return nil, nil, toolErr("reading response: %v", err)
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			return mcp.NewToolResultError(fmt.Sprintf("batch updating form (HTTP %d): %s", resp.StatusCode, string(respBody))), nil
+			return nil, nil, toolErr("batch updating form (HTTP %d): %s", resp.StatusCode, string(respBody))
 		}
 
 		// Parse the response to extract reply details
@@ -507,7 +512,7 @@ func handleBatchUpdateForm(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			Replies []map[string]any `json:"replies"`
 		}
 		if err := json.Unmarshal(respBody, &batchResp); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("parsing response: %v", err)), nil
+			return nil, nil, toolErr("parsing response: %v", err)
 		}
 
 		editURL := fmt.Sprintf("https://docs.google.com/forms/d/%s/edit", formID)
@@ -545,6 +550,6 @@ func handleBatchUpdateForm(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			}
 		}
 
-		return mcp.NewToolResultText(out.String()), nil
+		return textResult(out.String())
 	}
 }

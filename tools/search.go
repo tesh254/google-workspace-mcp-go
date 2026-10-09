@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/google/jsonschema-go/jsonschema"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	customsearch "google.golang.org/api/customsearch/v1"
 	"google.golang.org/api/option"
 
@@ -16,7 +16,7 @@ import (
 )
 
 // RegisterSearchTools registers all Search tools with the MCP server.
-func RegisterSearchTools(s *mcpserver.MCPServer, _ server.Config) {
+func RegisterSearchTools(s *mcp.Server, _ server.Config) {
 	registerSearchCustom(s)
 	registerGetSearchEngineInfo(s)
 	registerSearchCustomSiterestrict(s)
@@ -149,227 +149,204 @@ func executeSearch(ctx context.Context, email, q string, num, start int, safe st
 
 // --- search_custom ---
 
-func registerSearchCustom(s *mcpserver.MCPServer) {
-	tool := mcp.NewTool("search_custom",
-		mcp.WithDescription("Performs a search using Google Custom Search JSON API."),
-		mcp.WithString("user_google_email",
-			mcp.Required(),
-			mcp.Description("The user's Google email address."),
-		),
-		mcp.WithString("q",
-			mcp.Required(),
-			mcp.Description("The search query."),
-		),
-		mcp.WithNumber("num",
-			mcp.Description("Number of results to return (1-10). Defaults to 10."),
-		),
-		mcp.WithNumber("start",
-			mcp.Description("The index of the first result to return (1-based). Defaults to 1."),
-		),
-		mcp.WithString("safe",
-			mcp.Description("Safe search level. Defaults to \"off\"."),
-			mcp.Enum("active", "moderate", "off"),
-		),
-		mcp.WithString("search_type",
-			mcp.Description("Search for images if set to \"image\"."),
-			mcp.Enum("image"),
-		),
-		mcp.WithString("site_search",
-			mcp.Description("Restrict search to a specific site/domain."),
-		),
-		mcp.WithString("site_search_filter",
-			mcp.Description("Exclude (\"e\") or include (\"i\") site_search results."),
-			mcp.Enum("e", "i"),
-		),
-		mcp.WithString("date_restrict",
-			mcp.Description("Restrict results by date (e.g., \"d5\" for past 5 days, \"m3\" for past 3 months)."),
-		),
-		mcp.WithString("file_type",
-			mcp.Description("Filter by file type (e.g., \"pdf\", \"doc\")."),
-		),
-		mcp.WithString("language",
-			mcp.Description("Language code for results (e.g., \"lang_en\")."),
-		),
-		mcp.WithString("country",
-			mcp.Description("Country code for results (e.g., \"countryUS\")."),
-		),
-	)
-	RegisterTool(s, tool, handleSearchCustom)
+func registerSearchCustom(s *mcp.Server) {
+	tool := inputSchema[searchCustomIn](&mcp.Tool{
+		Name:        "search_custom",
+		Description: "Performs a search using Google Custom Search JSON API.",
+	}, func(sch *jsonschema.Schema) {
+		setEnum(sch, "safe", "active", "moderate", "off")
+		setEnum(sch, "search_type", "image")
+		setEnum(sch, "site_search_filter", "e", "i")
+	})
+	mcp.AddTool(s, tool, handleSearchCustom())
 }
 
-func handleSearchCustom(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	email, err := resolveEmail(request)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	q, err := request.RequireString("q")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
+// searchCustomIn is the input schema for search_custom.
+type searchCustomIn struct {
+	UserGoogleEmail  string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	Q                string `json:"q" jsonschema:"The search query."`
+	Num              int    `json:"num,omitempty" jsonschema:"Number of results to return (1-10). Defaults to 10."`
+	Start            int    `json:"start,omitempty" jsonschema:"The index of the first result to return (1-based). Defaults to 1."`
+	Safe             string `json:"safe,omitempty" jsonschema:"Safe search level. Defaults to \"off\"."`
+	SearchType       string `json:"search_type,omitempty" jsonschema:"Search for images if set to \"image\"."`
+	SiteSearch       string `json:"site_search,omitempty" jsonschema:"Restrict search to a specific site/domain."`
+	SiteSearchFilter string `json:"site_search_filter,omitempty" jsonschema:"Exclude (\"e\") or include (\"i\") site_search results."`
+	DateRestrict     string `json:"date_restrict,omitempty" jsonschema:"Restrict results by date (e.g., \"d5\" for past 5 days, \"m3\" for past 3 months)."`
+	FileType         string `json:"file_type,omitempty" jsonschema:"Filter by file type (e.g., \"pdf\", \"doc\")."`
+	Language         string `json:"language,omitempty" jsonschema:"Language code for results (e.g., \"lang_en\")."`
+	Country          string `json:"country,omitempty" jsonschema:"Country code for results (e.g., \"countryUS\")."`
+}
 
-	num := request.GetInt("num", 10)
-	start := request.GetInt("start", 1)
-	safe := request.GetString("safe", "off")
-	searchType := request.GetString("search_type", "")
-	siteSearch := request.GetString("site_search", "")
-	siteSearchFilter := request.GetString("site_search_filter", "")
-	dateRestrict := request.GetString("date_restrict", "")
-	fileType := request.GetString("file_type", "")
-	language := request.GetString("language", "")
-	country := request.GetString("country", "")
+func handleSearchCustom() mcp.ToolHandlerFor[searchCustomIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchCustomIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
 
-	text, err := executeSearch(ctx, email, q, num, start, safe, searchType, siteSearch, siteSearchFilter, dateRestrict, fileType, language, country)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		num := in.Num
+		if num == 0 {
+			num = 10
+		}
+		start := in.Start
+		if start == 0 {
+			start = 1
+		}
+		safe := in.Safe
+		if safe == "" {
+			safe = "off"
+		}
+
+		text, err := executeSearch(ctx, email, in.Q, num, start, safe, in.SearchType, in.SiteSearch, in.SiteSearchFilter, in.DateRestrict, in.FileType, in.Language, in.Country)
+		if err != nil {
+			return nil, nil, err
+		}
+		return textResult(text)
 	}
-	return mcp.NewToolResultText(text), nil
 }
 
 // --- get_search_engine_info ---
 
-func registerGetSearchEngineInfo(s *mcpserver.MCPServer) {
-	tool := mcp.NewTool("get_search_engine_info",
-		mcp.WithDescription("Retrieves metadata about a Programmable Search Engine."),
-		mcp.WithString("user_google_email",
-			mcp.Required(),
-			mcp.Description("The user's Google email address."),
-		),
-	)
-	RegisterTool(s, tool, handleGetSearchEngineInfo)
+func registerGetSearchEngineInfo(s *mcp.Server) {
+	tool := &mcp.Tool{
+		Name:        "get_search_engine_info",
+		Description: "Retrieves metadata about a Programmable Search Engine.",
+	}
+	mcp.AddTool(s, tool, handleGetSearchEngineInfo())
 }
 
-func handleGetSearchEngineInfo(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	email, err := resolveEmail(request)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
+// getSearchEngineInfoIn is the input schema for get_search_engine_info.
+type getSearchEngineInfoIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+}
 
-	svc, cx, err := newCustomSearchService(ctx)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-
-	// Perform a minimal search to get the search engine context.
-	result, err := svc.Cse.List().Q("test").Cx(cx).Num(1).Context(ctx).Do()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("querying search engine info: %v", err)), nil
-	}
-
-	// Context is googleapi.RawMessage (JSON bytes) — parse manually.
-	title := "Unknown"
-	var contextData map[string]any
-	if len(result.Context) > 0 {
-		_ = json.Unmarshal(result.Context, &contextData)
-	}
-	if contextData != nil {
-		if t, ok := contextData["title"].(string); ok && t != "" {
-			title = t
+func handleGetSearchEngineInfo() mcp.ToolHandlerFor[getSearchEngineInfoIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getSearchEngineInfoIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
 		}
-	}
 
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Search Engine Information for %s:\n", email)
-	fmt.Fprintf(&sb, "- Search Engine ID: %s\n", cx)
-	fmt.Fprintf(&sb, "- Title: %s\n", title)
+		svc, cx, err := newCustomSearchService(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
 
-	// Add facet/refinement information if available.
-	if contextData != nil {
-		if facets, ok := contextData["facets"].([]any); ok && len(facets) > 0 {
-			sb.WriteString("\nAvailable Refinements:\n")
-			for _, facet := range facets {
-				if facetList, ok := facet.([]any); ok {
-					for _, item := range facetList {
-						if itemMap, ok := item.(map[string]any); ok {
-							label := "Unknown"
-							anchor := "Unknown"
-							if l, ok := itemMap["label"].(string); ok && l != "" {
-								label = l
+		// Perform a minimal search to get the search engine context.
+		result, err := svc.Cse.List().Q("test").Cx(cx).Num(1).Context(ctx).Do()
+		if err != nil {
+			return nil, nil, toolErr("querying search engine info: %v", err)
+		}
+
+		// Context is googleapi.RawMessage (JSON bytes) — parse manually.
+		title := "Unknown"
+		var contextData map[string]any
+		if len(result.Context) > 0 {
+			_ = json.Unmarshal(result.Context, &contextData)
+		}
+		if contextData != nil {
+			if t, ok := contextData["title"].(string); ok && t != "" {
+				title = t
+			}
+		}
+
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "Search Engine Information for %s:\n", email)
+		fmt.Fprintf(&sb, "- Search Engine ID: %s\n", cx)
+		fmt.Fprintf(&sb, "- Title: %s\n", title)
+
+		// Add facet/refinement information if available.
+		if contextData != nil {
+			if facets, ok := contextData["facets"].([]any); ok && len(facets) > 0 {
+				sb.WriteString("\nAvailable Refinements:\n")
+				for _, facet := range facets {
+					if facetList, ok := facet.([]any); ok {
+						for _, item := range facetList {
+							if itemMap, ok := item.(map[string]any); ok {
+								label := "Unknown"
+								anchor := "Unknown"
+								if l, ok := itemMap["label"].(string); ok && l != "" {
+									label = l
+								}
+								if a, ok := itemMap["anchor"].(string); ok && a != "" {
+									anchor = a
+								}
+								fmt.Fprintf(&sb, "  - %s (anchor: %s)\n", label, anchor)
 							}
-							if a, ok := itemMap["anchor"].(string); ok && a != "" {
-								anchor = a
-							}
-							fmt.Fprintf(&sb, "  - %s (anchor: %s)\n", label, anchor)
 						}
 					}
 				}
 			}
 		}
-	}
 
-	// Add search statistics.
-	if result.SearchInformation != nil {
-		totalResults := result.SearchInformation.TotalResults
-		if totalResults == "" {
-			totalResults = "Unknown"
+		// Add search statistics.
+		if result.SearchInformation != nil {
+			totalResults := result.SearchInformation.TotalResults
+			if totalResults == "" {
+				totalResults = "Unknown"
+			}
+			sb.WriteString("\nSearch Statistics:\n")
+			fmt.Fprintf(&sb, "  - Total indexed results: %s\n", totalResults)
 		}
-		sb.WriteString("\nSearch Statistics:\n")
-		fmt.Fprintf(&sb, "  - Total indexed results: %s\n", totalResults)
-	}
 
-	return mcp.NewToolResultText(sb.String()), nil
+		return textResult(sb.String())
+	}
 }
 
 // --- search_custom_siterestrict ---
 
-func registerSearchCustomSiterestrict(s *mcpserver.MCPServer) {
-	tool := mcp.NewTool("search_custom_siterestrict",
-		mcp.WithDescription("Performs a search restricted to specific sites using Google Custom Search."),
-		mcp.WithString("user_google_email",
-			mcp.Required(),
-			mcp.Description("The user's Google email address."),
-		),
-		mcp.WithString("q",
-			mcp.Required(),
-			mcp.Description("The search query."),
-		),
-		mcp.WithArray("sites",
-			mcp.Required(),
-			mcp.Description("List of sites/domains to search within."),
-			mcp.Items(map[string]any{"type": "string"}),
-		),
-		mcp.WithNumber("num",
-			mcp.Description("Number of results to return (1-10). Defaults to 10."),
-		),
-		mcp.WithNumber("start",
-			mcp.Description("The index of the first result to return (1-based). Defaults to 1."),
-		),
-		mcp.WithString("safe",
-			mcp.Description("Safe search level. Defaults to \"off\"."),
-			mcp.Enum("active", "moderate", "off"),
-		),
-	)
-	RegisterTool(s, tool, handleSearchCustomSiterestrict)
+func registerSearchCustomSiterestrict(s *mcp.Server) {
+	tool := inputSchema[searchCustomSiterestrictIn](&mcp.Tool{
+		Name:        "search_custom_siterestrict",
+		Description: "Performs a search restricted to specific sites using Google Custom Search.",
+	}, func(sch *jsonschema.Schema) {
+		setEnum(sch, "safe", "active", "moderate", "off")
+	})
+	mcp.AddTool(s, tool, handleSearchCustomSiterestrict())
 }
 
-func handleSearchCustomSiterestrict(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	email, err := resolveEmail(request)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	q, err := request.RequireString("q")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	sites, err := request.RequireStringSlice("sites")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
+// searchCustomSiterestrictIn is the input schema for search_custom_siterestrict.
+type searchCustomSiterestrictIn struct {
+	UserGoogleEmail string   `json:"user_google_email,omitempty" jsonschema:"The user's Google email address."`
+	Q               string   `json:"q" jsonschema:"The search query."`
+	Sites           []string `json:"sites" jsonschema:"List of sites/domains to search within."`
+	Num             int      `json:"num,omitempty" jsonschema:"Number of results to return (1-10). Defaults to 10."`
+	Start           int      `json:"start,omitempty" jsonschema:"The index of the first result to return (1-based). Defaults to 1."`
+	Safe            string   `json:"safe,omitempty" jsonschema:"Safe search level. Defaults to \"off\"."`
+}
 
-	num := request.GetInt("num", 10)
-	start := request.GetInt("start", 1)
-	safe := request.GetString("safe", "off")
+func handleSearchCustomSiterestrict() mcp.ToolHandlerFor[searchCustomSiterestrictIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchCustomSiterestrictIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
 
-	// Build site restriction query.
-	siteParts := make([]string, len(sites))
-	for i, site := range sites {
-		siteParts[i] = "site:" + site
-	}
-	siteQuery := strings.Join(siteParts, " OR ")
-	fullQuery := fmt.Sprintf("%s (%s)", q, siteQuery)
+		num := in.Num
+		if num == 0 {
+			num = 10
+		}
+		start := in.Start
+		if start == 0 {
+			start = 1
+		}
+		safe := in.Safe
+		if safe == "" {
+			safe = "off"
+		}
 
-	text, err := executeSearch(ctx, email, fullQuery, num, start, safe, "", "", "", "", "", "", "")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		// Build site restriction query.
+		siteParts := make([]string, len(in.Sites))
+		for i, site := range in.Sites {
+			siteParts[i] = "site:" + site
+		}
+		siteQuery := strings.Join(siteParts, " OR ")
+		fullQuery := fmt.Sprintf("%s (%s)", in.Q, siteQuery)
+
+		text, err := executeSearch(ctx, email, fullQuery, num, start, safe, "", "", "", "", "", "", "")
+		if err != nil {
+			return nil, nil, err
+		}
+		return textResult(text)
 	}
-	return mcp.NewToolResultText(text), nil
 }

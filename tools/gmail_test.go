@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	gmail "google.golang.org/api/gmail/v1"
 )
 
@@ -21,9 +20,9 @@ func TestGmailFormatSearchResults(t *testing.T) {
 		wantExact     string // only checked if non-empty
 	}{
 		{
-			name:     "no messages",
-			messages: []*gmail.Message{},
-			query:    "from:test@example.com",
+			name:      "no messages",
+			messages:  []*gmail.Message{},
+			query:     "from:test@example.com",
 			wantExact: "No messages found for query: 'from:test@example.com'",
 		},
 		{
@@ -1076,117 +1075,32 @@ func TestGmailEncodeSubject(t *testing.T) {
 	}
 }
 
-// --- getStringSlice ---
-
-func TestGmailGetStringSlice(t *testing.T) {
-	tests := []struct {
-		name string
-		args map[string]any
-		key  string
-		want []string
-	}{
-		{
-			name: "key present with string values",
-			args: map[string]any{"labels": []any{"INBOX", "STARRED"}},
-			key:  "labels",
-			want: []string{"INBOX", "STARRED"},
-		},
-		{
-			name: "key absent",
-			args: map[string]any{},
-			key:  "labels",
-			want: nil,
-		},
-		{
-			name: "key present but nil",
-			args: map[string]any{"labels": nil},
-			key:  "labels",
-			want: nil,
-		},
-		{
-			name: "key present but not array",
-			args: map[string]any{"labels": "not-an-array"},
-			key:  "labels",
-			want: nil,
-		},
-		{
-			name: "mixed types in array",
-			args: map[string]any{"labels": []any{"valid", 123, "also-valid"}},
-			key:  "labels",
-			want: []string{"valid", "also-valid"},
-		},
-		{
-			name: "empty array",
-			args: map[string]any{"labels": []any{}},
-			key:  "labels",
-			want: []string{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			request := mcp.CallToolRequest{}
-			request.Params.Arguments = tt.args
-
-			got := getStringSlice(request, tt.key)
-
-			if tt.want == nil {
-				if got != nil {
-					t.Errorf("got %v, want nil", got)
-				}
-				return
-			}
-			if len(got) != len(tt.want) {
-				t.Errorf("got %v (len %d), want %v (len %d)", got, len(got), tt.want, len(tt.want))
-				return
-			}
-			for i, v := range got {
-				if v != tt.want[i] {
-					t.Errorf("got[%d] = %q, want %q", i, v, tt.want[i])
-				}
-			}
-		})
-	}
-}
-
 // --- getAttachments ---
 
 func TestGmailGetAttachments(t *testing.T) {
 	tests := []struct {
-		name string
-		args map[string]any
-		want int
+		name  string
+		atts  []map[string]any
+		want  int
 		check func(t *testing.T, atts []emailAttachment)
 	}{
 		{
-			name: "no attachments key",
-			args: map[string]any{},
-			want: 0,
-		},
-		{
 			name: "nil attachments",
-			args: map[string]any{"attachments": nil},
-			want: 0,
-		},
-		{
-			name: "not an array",
-			args: map[string]any{"attachments": "bad"},
+			atts: nil,
 			want: 0,
 		},
 		{
 			name: "empty array",
-			args: map[string]any{"attachments": []any{}},
+			atts: []map[string]any{},
 			want: 0,
 		},
 		{
 			name: "content-based attachment",
-			args: map[string]any{
-				"attachments": []any{
-					map[string]any{
-						"filename":  "test.txt",
-						"content":   base64.StdEncoding.EncodeToString([]byte("hello")),
-						"mime_type": "text/plain",
-					},
+			atts: []map[string]any{
+				{
+					"filename":  "test.txt",
+					"content":   base64.StdEncoding.EncodeToString([]byte("hello")),
+					"mime_type": "text/plain",
 				},
 			},
 			want: 1,
@@ -1204,30 +1118,19 @@ func TestGmailGetAttachments(t *testing.T) {
 		},
 		{
 			name: "invalid base64 content skipped",
-			args: map[string]any{
-				"attachments": []any{
-					map[string]any{
-						"filename": "bad.txt",
-						"content":  "!!!not-valid!!!",
-					},
+			atts: []map[string]any{
+				{
+					"filename": "bad.txt",
+					"content":  "!!!not-valid!!!",
 				},
 			},
 			want: 0,
 		},
 		{
-			name: "non-map item skipped",
-			args: map[string]any{
-				"attachments": []any{"not-a-map"},
-			},
-			want: 0,
-		},
-		{
 			name: "default filename and mime type",
-			args: map[string]any{
-				"attachments": []any{
-					map[string]any{
-						"content": base64.StdEncoding.EncodeToString([]byte("data")),
-					},
+			atts: []map[string]any{
+				{
+					"content": base64.StdEncoding.EncodeToString([]byte("data")),
 				},
 			},
 			want: 1,
@@ -1244,10 +1147,7 @@ func TestGmailGetAttachments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			request := mcp.CallToolRequest{}
-			request.Params.Arguments = tt.args
-
-			got := getAttachments(request)
+			got := getAttachments(tt.atts)
 			if len(got) != tt.want {
 				t.Errorf("got %d attachments, want %d", len(got), tt.want)
 			}

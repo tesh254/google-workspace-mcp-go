@@ -2,55 +2,101 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/google/jsonschema-go/jsonschema"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	drive "google.golang.org/api/drive/v3"
 )
+
+// commentToolArgs decodes the raw arguments of a low-level tool handler into
+// a keyed map. The comment tools have dynamic parameter names (the file ID
+// parameter differs per app), so they parse arguments manually instead of
+// using typed input structs.
+func commentToolArgs(req *mcp.CallToolRequest) map[string]any {
+	var args map[string]any
+	if len(req.Params.Arguments) > 0 {
+		_ = json.Unmarshal(req.Params.Arguments, &args)
+	}
+	return args
+}
+
+// commentInputSchema builds the input schema for a comment tool.
+// user_google_email and the app-specific file ID property are always present;
+// extra adds operation-specific properties (comment IDs, reply contents).
+// required names the properties the call must supply.
+func commentInputSchema(appTitle, fileIDParam string, extra map[string]string, required []string) *jsonschema.Schema {
+	props := map[string]*jsonschema.Schema{
+		"user_google_email": {Type: "string", Description: "The user's Google email address."},
+		fileIDParam:         {Type: "string", Description: fmt.Sprintf("The ID of the Google %s.", appTitle)},
+	}
+	order := []string{"user_google_email", fileIDParam}
+	for name, desc := range extra {
+		props[name] = &jsonschema.Schema{Type: "string", Description: desc}
+		order = append(order, name)
+	}
+	return &jsonschema.Schema{
+		Type:          "object",
+		Properties:    props,
+		Required:      required,
+		PropertyOrder: order,
+	}
+}
 
 // RegisterCommentTools registers 4 comment management tools for a Google Workspace app.
 // appName is the app type (e.g. "document", "spreadsheet", "presentation").
 // fileIDParam is the parameter name for the file ID (e.g. "document_id", "spreadsheet_id", "presentation_id").
-func RegisterCommentTools(s *mcpserver.MCPServer, getClient httpClientFunc, appName, fileIDParam string) {
+func RegisterCommentTools(s *mcp.Server, getClient httpClientFunc, appName, fileIDParam string) {
 	appTitle := titleCase(appName)
 
 	// read_{appName}_comments
-	RegisterTool(s, mcp.NewTool(
-		fmt.Sprintf("read_%s_comments", appName),
-		mcp.WithDescription(fmt.Sprintf("Read all comments from a Google %s.", appTitle)),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString(fileIDParam, mcp.Required(), mcp.Description(fmt.Sprintf("The ID of the Google %s.", appTitle))),
-	), makeReadCommentsHandler(getClient, appName, fileIDParam))
+	s.AddTool(
+		&mcp.Tool{
+			Name:        fmt.Sprintf("read_%s_comments", appName),
+			Description: fmt.Sprintf("Read all comments from a Google %s.", appTitle),
+			InputSchema: commentInputSchema(appTitle, fileIDParam, nil, []string{fileIDParam}),
+		},
+		makeReadCommentsHandler(getClient, appName, fileIDParam),
+	)
 
 	// create_{appName}_comment
-	RegisterTool(s, mcp.NewTool(
-		fmt.Sprintf("create_%s_comment", appName),
-		mcp.WithDescription(fmt.Sprintf("Create a new comment on a Google %s.", appTitle)),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString(fileIDParam, mcp.Required(), mcp.Description(fmt.Sprintf("The ID of the Google %s.", appTitle))),
-		mcp.WithString("comment_content", mcp.Required(), mcp.Description("The content of the comment.")),
-	), makeCreateCommentHandler(getClient, appName, fileIDParam))
+	s.AddTool(
+		&mcp.Tool{
+			Name:        fmt.Sprintf("create_%s_comment", appName),
+			Description: fmt.Sprintf("Create a new comment on a Google %s.", appTitle),
+			InputSchema: commentInputSchema(appTitle, fileIDParam, map[string]string{
+				"comment_content": "The content of the comment.",
+			}, []string{fileIDParam, "comment_content"}),
+		},
+		makeCreateCommentHandler(getClient, appName, fileIDParam),
+	)
 
 	// reply_to_{appName}_comment
-	RegisterTool(s, mcp.NewTool(
-		fmt.Sprintf("reply_to_%s_comment", appName),
-		mcp.WithDescription(fmt.Sprintf("Reply to a specific comment on a Google %s.", appTitle)),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString(fileIDParam, mcp.Required(), mcp.Description(fmt.Sprintf("The ID of the Google %s.", appTitle))),
-		mcp.WithString("comment_id", mcp.Required(), mcp.Description("The ID of the comment to reply to.")),
-		mcp.WithString("reply_content", mcp.Required(), mcp.Description("The content of the reply.")),
-	), makeReplyToCommentHandler(getClient, appName, fileIDParam))
+	s.AddTool(
+		&mcp.Tool{
+			Name:        fmt.Sprintf("reply_to_%s_comment", appName),
+			Description: fmt.Sprintf("Reply to a specific comment on a Google %s.", appTitle),
+			InputSchema: commentInputSchema(appTitle, fileIDParam, map[string]string{
+				"comment_id":    "The ID of the comment to reply to.",
+				"reply_content": "The content of the reply.",
+			}, []string{fileIDParam, "comment_id", "reply_content"}),
+		},
+		makeReplyToCommentHandler(getClient, appName, fileIDParam),
+	)
 
 	// resolve_{appName}_comment
-	RegisterTool(s, mcp.NewTool(
-		fmt.Sprintf("resolve_%s_comment", appName),
-		mcp.WithDescription(fmt.Sprintf("Resolve a comment on a Google %s.", appTitle)),
-		mcp.WithString("user_google_email", mcp.Description("The user's Google email address.")),
-		mcp.WithString(fileIDParam, mcp.Required(), mcp.Description(fmt.Sprintf("The ID of the Google %s.", appTitle))),
-		mcp.WithString("comment_id", mcp.Required(), mcp.Description("The ID of the comment to resolve.")),
-	), makeResolveCommentHandler(getClient, appName, fileIDParam))
+	s.AddTool(
+		&mcp.Tool{
+			Name:        fmt.Sprintf("resolve_%s_comment", appName),
+			Description: fmt.Sprintf("Resolve a comment on a Google %s.", appTitle),
+			InputSchema: commentInputSchema(appTitle, fileIDParam, map[string]string{
+				"comment_id": "The ID of the comment to resolve.",
+			}, []string{fileIDParam, "comment_id"}),
+		},
+		makeResolveCommentHandler(getClient, appName, fileIDParam),
+	)
 }
 
 // titleCase returns the first letter capitalized, rest lower (simple single-word).
@@ -61,32 +107,44 @@ func titleCase(s string) string {
 	return string(s[0]-32) + s[1:]
 }
 
+// commentStringArg reads a required string argument for a comment tool.
+// It mirrors the runtime checks the old untyped request parsing performed.
+func commentStringArg(args map[string]any, key string) (string, bool) {
+	v, ok := args[key].(string)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
+}
+
 // makeReadCommentsHandler creates a handler that reads all comments from a file.
-func makeReadCommentsHandler(getClient httpClientFunc, appName, fileIDParam string) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+func makeReadCommentsHandler(getClient httpClientFunc, appName, fileIDParam string) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := commentToolArgs(req)
+		emailArg, _ := commentStringArg(args, "user_google_email")
+		email, err := resolveEmail(emailArg)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return isErrorResult(err.Error()), nil
 		}
-		fileID, err := request.RequireString(fileIDParam)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		fileID, ok := commentStringArg(args, fileIDParam)
+		if !ok {
+			return isErrorResult(fmt.Sprintf("%s is required", fileIDParam)), nil
 		}
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return isErrorResult(err.Error()), nil
 		}
 
 		resp, err := svc.Comments.List(fileID).
 			Fields("comments(id,content,author,createdTime,modifiedTime,resolved,replies(content,author,id,createdTime,modifiedTime))").
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing comments: %v", err)), nil
+			return isErrorResult(fmt.Sprintf("listing comments: %v", err)), nil
 		}
 
 		if len(resp.Comments) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No comments found in %s %s", appName, fileID)), nil
+			return textToolResult(fmt.Sprintf("No comments found in %s %s", appName, fileID)), nil
 		}
 
 		var out strings.Builder
@@ -122,36 +180,38 @@ func makeReadCommentsHandler(getClient httpClientFunc, appName, fileIDParam stri
 			}
 		}
 
-		return mcp.NewToolResultText(out.String()), nil
+		return textToolResult(out.String()), nil
 	}
 }
 
 // makeCreateCommentHandler creates a handler that creates a new comment on a file.
-func makeCreateCommentHandler(getClient httpClientFunc, appName, fileIDParam string) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+func makeCreateCommentHandler(getClient httpClientFunc, appName, fileIDParam string) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := commentToolArgs(req)
+		emailArg, _ := commentStringArg(args, "user_google_email")
+		email, emailErr := resolveEmail(emailArg)
+		if emailErr != nil {
+			return isErrorResult("user_google_email is required"), nil
 		}
-		fileID, err := request.RequireString(fileIDParam)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		fileID, ok := commentStringArg(args, fileIDParam)
+		if !ok {
+			return isErrorResult(fmt.Sprintf("%s is required", fileIDParam)), nil
 		}
-		content, err := request.RequireString("comment_content")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		content, ok := commentStringArg(args, "comment_content")
+		if !ok {
+			return isErrorResult("comment_content is required"), nil
 		}
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return isErrorResult(err.Error()), nil
 		}
 
 		comment, err := svc.Comments.Create(fileID, &drive.Comment{
 			Content: content,
 		}).Fields("id,content,author,createdTime,modifiedTime").Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("creating comment: %v", err)), nil
+			return isErrorResult(fmt.Sprintf("creating comment: %v", err)), nil
 		}
 
 		author := "Unknown"
@@ -159,7 +219,7 @@ func makeCreateCommentHandler(getClient httpClientFunc, appName, fileIDParam str
 			author = comment.Author.DisplayName
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf(
+		return textToolResult(fmt.Sprintf(
 			"Comment created successfully!\nComment ID: %s\nAuthor: %s\nCreated: %s\nContent: %s",
 			comment.Id, author, comment.CreatedTime, content,
 		)), nil
@@ -167,35 +227,37 @@ func makeCreateCommentHandler(getClient httpClientFunc, appName, fileIDParam str
 }
 
 // makeReplyToCommentHandler creates a handler that replies to a comment on a file.
-func makeReplyToCommentHandler(getClient httpClientFunc, appName, fileIDParam string) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+func makeReplyToCommentHandler(getClient httpClientFunc, appName, fileIDParam string) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := commentToolArgs(req)
+		emailArg, _ := commentStringArg(args, "user_google_email")
+		email, emailErr := resolveEmail(emailArg)
+		if emailErr != nil {
+			return isErrorResult("user_google_email is required"), nil
 		}
-		fileID, err := request.RequireString(fileIDParam)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		fileID, ok := commentStringArg(args, fileIDParam)
+		if !ok {
+			return isErrorResult(fmt.Sprintf("%s is required", fileIDParam)), nil
 		}
-		commentID, err := request.RequireString("comment_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		commentID, ok := commentStringArg(args, "comment_id")
+		if !ok {
+			return isErrorResult("comment_id is required"), nil
 		}
-		replyContent, err := request.RequireString("reply_content")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		replyContent, ok := commentStringArg(args, "reply_content")
+		if !ok {
+			return isErrorResult("reply_content is required"), nil
 		}
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return isErrorResult(err.Error()), nil
 		}
 
 		reply, err := svc.Replies.Create(fileID, commentID, &drive.Reply{
 			Content: replyContent,
 		}).Fields("id,content,author,createdTime,modifiedTime").Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("replying to comment: %v", err)), nil
+			return isErrorResult(fmt.Sprintf("replying to comment: %v", err)), nil
 		}
 
 		author := "Unknown"
@@ -203,7 +265,7 @@ func makeReplyToCommentHandler(getClient httpClientFunc, appName, fileIDParam st
 			author = reply.Author.DisplayName
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf(
+		return textToolResult(fmt.Sprintf(
 			"Reply posted successfully!\nReply ID: %s\nAuthor: %s\nCreated: %s\nContent: %s",
 			reply.Id, author, reply.CreatedTime, replyContent,
 		)), nil
@@ -211,24 +273,26 @@ func makeReplyToCommentHandler(getClient httpClientFunc, appName, fileIDParam st
 }
 
 // makeResolveCommentHandler creates a handler that resolves a comment on a file.
-func makeResolveCommentHandler(getClient httpClientFunc, appName, fileIDParam string) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+func makeResolveCommentHandler(getClient httpClientFunc, appName, fileIDParam string) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := commentToolArgs(req)
+		emailArg, _ := commentStringArg(args, "user_google_email")
+		email, emailErr := resolveEmail(emailArg)
+		if emailErr != nil {
+			return isErrorResult("user_google_email is required"), nil
 		}
-		fileID, err := request.RequireString(fileIDParam)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		fileID, ok := commentStringArg(args, fileIDParam)
+		if !ok {
+			return isErrorResult(fmt.Sprintf("%s is required", fileIDParam)), nil
 		}
-		commentID, err := request.RequireString("comment_id")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		commentID, ok := commentStringArg(args, "comment_id")
+		if !ok {
+			return isErrorResult("comment_id is required"), nil
 		}
 
 		svc, err := newDriveService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return isErrorResult(err.Error()), nil
 		}
 
 		reply, err := svc.Replies.Create(fileID, commentID, &drive.Reply{
@@ -236,7 +300,7 @@ func makeResolveCommentHandler(getClient httpClientFunc, appName, fileIDParam st
 			Action:  "resolve",
 		}).Fields("id,content,author,createdTime,modifiedTime").Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("resolving comment: %v", err)), nil
+			return isErrorResult(fmt.Sprintf("resolving comment: %v", err)), nil
 		}
 
 		author := "Unknown"
@@ -244,7 +308,7 @@ func makeResolveCommentHandler(getClient httpClientFunc, appName, fileIDParam st
 			author = reply.Author.DisplayName
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf(
+		return textToolResult(fmt.Sprintf(
 			"Comment %s has been resolved successfully.\nResolve reply ID: %s\nAuthor: %s\nCreated: %s",
 			commentID, reply.Id, author, reply.CreatedTime,
 		)), nil

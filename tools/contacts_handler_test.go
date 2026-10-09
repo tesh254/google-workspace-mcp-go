@@ -3,107 +3,81 @@ package tools
 import (
 	"strings"
 	"testing"
+
+	"github.com/magks/google-workspace-mcp-go/internal/google"
 )
+
+// Required-argument error paths (missing contact_id, group_id, name, etc.)
+// are no longer tested here: with the official go-sdk, input validation
+// against the tool's schema happens in the SDK wrapper before the handler
+// runs. Only handler-level validation paths remain below.
+
+// contactsTestGetClient wires a real credential store backed by an empty temp
+// directory (no stored credentials) plus a fixed user email env var, matching
+// the previous newToolTestServer environment: every handler call using it
+// fails at authentication.
+func contactsTestGetClient(t *testing.T) httpClientFunc {
+	t.Helper()
+	t.Setenv("WORKSPACE_MCP_CREDENTIALS_DIR", t.TempDir())
+	t.Setenv("USER_GOOGLE_EMAIL", "test@example.com")
+	return clientFuncFromCache(google.DefaultClientCache())
+}
 
 // --- list_contacts ---
 // list_contacts has no strictly required params, so first error is auth failure.
 
 func TestContactsHandlerListContactsAuthFailure(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "list_contacts", nil)
-	if !isError {
-		t.Fatal("expected isError=true for auth failure")
-	}
-	lower := strings.ToLower(text)
+	handler := handleListContacts(contactsTestGetClient(t))
+	errText := callHandlerErr(t, handler, "list_contacts", listContactsIn{})
+	lower := strings.ToLower(errText)
 	if !strings.Contains(lower, "credentials") && !strings.Contains(lower, "authenticating") {
-		t.Errorf("expected error about credentials/auth, got %q", text)
+		t.Errorf("expected error about credentials/auth, got %q", errText)
 	}
 }
 
 // --- get_contact ---
 
-func TestContactsHandlerGetContactMissingContactID(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "get_contact", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "contact_id") {
-		t.Errorf("expected error mentioning 'contact_id', got %q", text)
-	}
-}
-
 func TestContactsHandlerGetContactAuthFailure(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "get_contact", map[string]any{
-		"contact_id": "c1234567890",
+	handler := handleGetContact(contactsTestGetClient(t))
+	errText := callHandlerErr(t, handler, "get_contact", getContactIn{
+		ContactID: "c1234567890",
 	})
-	if !isError {
-		t.Fatal("expected isError=true for auth failure")
-	}
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(errText)
 	if !strings.Contains(lower, "credentials") && !strings.Contains(lower, "authenticating") {
-		t.Errorf("expected error about credentials/auth, got %q", text)
+		t.Errorf("expected error about credentials/auth, got %q", errText)
 	}
 }
 
 // --- search_contacts ---
 
-func TestContactsHandlerSearchContactsMissingQuery(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "search_contacts", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "query") {
-		t.Errorf("expected error mentioning 'query', got %q", text)
-	}
-}
+// no handler-level validation for search_contacts: query is a schema-level
+// required param, so its absence is covered by the SDK wrapper.
 
 // --- list_contact_groups ---
 // list_contact_groups has no strictly required params, so first error is auth failure.
 
 func TestContactsHandlerListContactGroupsAuthFailure(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "list_contact_groups", nil)
-	if !isError {
-		t.Fatal("expected isError=true for auth failure")
-	}
-	lower := strings.ToLower(text)
+	handler := handleListContactGroups(contactsTestGetClient(t))
+	errText := callHandlerErr(t, handler, "list_contact_groups", listContactGroupsIn{})
+	lower := strings.ToLower(errText)
 	if !strings.Contains(lower, "credentials") && !strings.Contains(lower, "authenticating") {
-		t.Errorf("expected error about credentials/auth, got %q", text)
-	}
-}
-
-// --- get_contact_group ---
-
-func TestContactsHandlerGetContactGroupMissingGroupID(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "get_contact_group", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "group_id") {
-		t.Errorf("expected error mentioning 'group_id', got %q", text)
+		t.Errorf("expected error about credentials/auth, got %q", errText)
 	}
 }
 
 // --- create_contact ---
-// create_contact has no RequireString params. It calls resolveEmail (succeeds via env),
-// then newPeopleService (auth failure), then buildPersonBody check.
-// Auth failure comes before the buildPersonBody check.
+// create_contact has no required params that the handler checks. It calls
+// resolveEmail (succeeds via env), then newPeopleService (auth failure), then
+// buildPersonBody check. Auth failure comes before the buildPersonBody check.
 
 func TestContactsHandlerCreateContactAuthFailure(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "create_contact", map[string]any{
-		"given_name": "Test",
+	handler := handleCreateContact(contactsTestGetClient(t))
+	errText := callHandlerErr(t, handler, "create_contact", createContactIn{
+		GivenName: "Test",
 	})
-	if !isError {
-		t.Fatal("expected isError=true for auth failure")
-	}
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(errText)
 	if !strings.Contains(lower, "credentials") && !strings.Contains(lower, "authenticating") {
-		t.Errorf("expected error about credentials/auth, got %q", text)
+		t.Errorf("expected error about credentials/auth, got %q", errText)
 	}
 }
 
@@ -111,189 +85,70 @@ func TestContactsHandlerCreateContactNoFields(t *testing.T) {
 	// create_contact with no fields calls newPeopleService first (auth failure),
 	// then buildPersonBody. Since auth fails first, we can only test auth here.
 	// But let's test that an empty call hits auth before field validation.
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "create_contact", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
+	handler := handleCreateContact(contactsTestGetClient(t))
+	errText := callHandlerErr(t, handler, "create_contact", createContactIn{})
 	// Auth failure comes before field validation
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(errText)
 	if !strings.Contains(lower, "credentials") && !strings.Contains(lower, "authenticating") {
-		t.Errorf("expected error about credentials/auth, got %q", text)
-	}
-}
-
-// --- update_contact ---
-
-func TestContactsHandlerUpdateContactMissingContactID(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "update_contact", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "contact_id") {
-		t.Errorf("expected error mentioning 'contact_id', got %q", text)
-	}
-}
-
-// --- delete_contact ---
-
-func TestContactsHandlerDeleteContactMissingContactID(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "delete_contact", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "contact_id") {
-		t.Errorf("expected error mentioning 'contact_id', got %q", text)
+		t.Errorf("expected error about credentials/auth, got %q", errText)
 	}
 }
 
 // --- batch_create_contacts ---
-// contacts is checked via args type assertion, not RequireString.
 
 func TestContactsHandlerBatchCreateContactsNoContacts(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "batch_create_contacts", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	lower := strings.ToLower(text)
+	handler := handleBatchCreateContacts(contactsTestGetClient(t))
+	errText := callHandlerErr(t, handler, "batch_create_contacts", batchCreateContactsIn{})
+	lower := strings.ToLower(errText)
 	if !strings.Contains(lower, "contact") {
-		t.Errorf("expected error mentioning 'contact', got %q", text)
+		t.Errorf("expected error mentioning 'contact', got %q", errText)
 	}
 }
 
 func TestContactsHandlerBatchCreateContactsEmptyArray(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "batch_create_contacts", map[string]any{
-		"contacts": []any{},
+	handler := handleBatchCreateContacts(contactsTestGetClient(t))
+	errText := callHandlerErr(t, handler, "batch_create_contacts", batchCreateContactsIn{
+		Contacts: []map[string]any{},
 	})
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(errText)
 	if !strings.Contains(lower, "contact") {
-		t.Errorf("expected error mentioning 'contact', got %q", text)
+		t.Errorf("expected error mentioning 'contact', got %q", errText)
 	}
 }
 
 // --- batch_update_contacts ---
 
 func TestContactsHandlerBatchUpdateContactsNoUpdates(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "batch_update_contacts", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	lower := strings.ToLower(text)
+	handler := handleBatchUpdateContacts(contactsTestGetClient(t))
+	errText := callHandlerErr(t, handler, "batch_update_contacts", batchUpdateContactsIn{})
+	lower := strings.ToLower(errText)
 	if !strings.Contains(lower, "update") {
-		t.Errorf("expected error mentioning 'update', got %q", text)
+		t.Errorf("expected error mentioning 'update', got %q", errText)
 	}
 }
 
 // --- batch_delete_contacts ---
 
-func TestContactsHandlerBatchDeleteContactsMissingContactIDs(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "batch_delete_contacts", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "contact_id") {
-		t.Errorf("expected error mentioning 'contact_id', got %q", text)
-	}
-}
-
 func TestContactsHandlerBatchDeleteContactsEmptyArray(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "batch_delete_contacts", map[string]any{
-		"contact_ids": []any{},
+	handler := handleBatchDeleteContacts(contactsTestGetClient(t))
+	errText := callHandlerErr(t, handler, "batch_delete_contacts", batchDeleteContactsIn{
+		ContactIDs: []string{},
 	})
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(errText)
 	if !strings.Contains(lower, "contact") {
-		t.Errorf("expected error mentioning 'contact', got %q", text)
-	}
-}
-
-// --- create_contact_group ---
-
-func TestContactsHandlerCreateContactGroupMissingName(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "create_contact_group", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "name") {
-		t.Errorf("expected error mentioning 'name', got %q", text)
-	}
-}
-
-// --- update_contact_group ---
-
-func TestContactsHandlerUpdateContactGroupMissingGroupID(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "update_contact_group", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "group_id") {
-		t.Errorf("expected error mentioning 'group_id', got %q", text)
-	}
-}
-
-func TestContactsHandlerUpdateContactGroupMissingName(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "update_contact_group", map[string]any{
-		"group_id": "abc123",
-	})
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "name") {
-		t.Errorf("expected error mentioning 'name', got %q", text)
-	}
-}
-
-// --- delete_contact_group ---
-
-func TestContactsHandlerDeleteContactGroupMissingGroupID(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "delete_contact_group", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "group_id") {
-		t.Errorf("expected error mentioning 'group_id', got %q", text)
+		t.Errorf("expected error mentioning 'contact', got %q", errText)
 	}
 }
 
 // --- modify_contact_group_members ---
 
-func TestContactsHandlerModifyContactGroupMembersMissingGroupID(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "modify_contact_group_members", nil)
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	if !strings.Contains(strings.ToLower(text), "group_id") {
-		t.Errorf("expected error mentioning 'group_id', got %q", text)
-	}
-}
-
 func TestContactsHandlerModifyContactGroupMembersNoAddOrRemove(t *testing.T) {
-	s := newToolTestServer(t)
-	text, isError := callTool(t, s, "modify_contact_group_members", map[string]any{
-		"group_id": "abc123",
+	handler := handleModifyContactGroupMembers(contactsTestGetClient(t))
+	errText := callHandlerErr(t, handler, "modify_contact_group_members", modifyContactGroupMembersIn{
+		GroupID: "abc123",
 	})
-	if !isError {
-		t.Fatal("expected isError=true")
-	}
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(errText)
 	if !strings.Contains(lower, "add_contact_ids") && !strings.Contains(lower, "remove_contact_ids") {
-		t.Errorf("expected error mentioning add/remove contact IDs, got %q", text)
+		t.Errorf("expected error mentioning add/remove contact IDs, got %q", errText)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	drive "google.golang.org/api/drive/v3"
 )
 
@@ -648,80 +647,6 @@ func TestDriveFormatPermissionInfo(t *testing.T) {
 				if !strings.Contains(got, want) {
 					t.Errorf("output missing %q\ngot: %s", want, got)
 				}
-			}
-		})
-	}
-}
-
-// --- getBool ---
-
-func TestDriveGetBool(t *testing.T) {
-	tests := []struct {
-		name       string
-		args       map[string]any
-		key        string
-		defaultVal bool
-		want       bool
-	}{
-		{
-			name:       "key present and true",
-			args:       map[string]any{"include": true},
-			key:        "include",
-			defaultVal: false,
-			want:       true,
-		},
-		{
-			name:       "key present and false",
-			args:       map[string]any{"include": false},
-			key:        "include",
-			defaultVal: true,
-			want:       false,
-		},
-		{
-			name:       "key absent returns default true",
-			args:       map[string]any{},
-			key:        "include",
-			defaultVal: true,
-			want:       true,
-		},
-		{
-			name:       "key absent returns default false",
-			args:       map[string]any{},
-			key:        "include",
-			defaultVal: false,
-			want:       false,
-		},
-		{
-			name:       "key is nil returns default",
-			args:       map[string]any{"include": nil},
-			key:        "include",
-			defaultVal: true,
-			want:       true,
-		},
-		{
-			name:       "key is wrong type returns default",
-			args:       map[string]any{"include": "not-a-bool"},
-			key:        "include",
-			defaultVal: false,
-			want:       false,
-		},
-		{
-			name:       "key is number returns default",
-			args:       map[string]any{"include": 1},
-			key:        "include",
-			defaultVal: true,
-			want:       true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			request := mcp.CallToolRequest{}
-			request.Params.Arguments = tt.args
-
-			got := getBool(request, tt.key, tt.defaultVal)
-			if got != tt.want {
-				t.Errorf("getBool(%q, %v) = %v, want %v", tt.key, tt.defaultVal, got, tt.want)
 			}
 		})
 	}

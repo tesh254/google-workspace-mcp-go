@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	chat "google.golang.org/api/chat/v1"
 
 	"github.com/magks/google-workspace-mcp-go/internal/google"
@@ -14,7 +13,7 @@ import (
 )
 
 // RegisterChatTools registers all Chat tools with the MCP server.
-func RegisterChatTools(s *mcpserver.MCPServer, _ server.Config) {
+func RegisterChatTools(s *mcp.Server, _ server.Config) {
 	getClient := clientFuncFromCache(google.DefaultClientCache())
 
 	registerListSpaces(s, getClient)
@@ -38,29 +37,40 @@ func newChatService(ctx context.Context, getClient httpClientFunc, email string)
 
 // --- list_spaces ---
 
-func registerListSpaces(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("list_spaces",
-		mcp.WithDescription("Lists Google Chat spaces (rooms and direct messages) accessible to the user."),
-		mcp.WithString("user_google_email", mcp.Description("User's Google email address")),
-		mcp.WithNumber("page_size", mcp.Description("Number of spaces to return per page. Defaults to 100.")),
-		mcp.WithString("space_type", mcp.Description("Type of spaces to filter: 'all', 'room', or 'dm'. Defaults to 'all'.")),
-	)
-	s.AddTool(tool, handleListSpaces(getClient))
+func registerListSpaces(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "list_spaces",
+		Description: "Lists Google Chat spaces (rooms and direct messages) accessible to the user.",
+	}
+	mcp.AddTool(s, tool, handleListSpaces(getClient))
 }
 
-func handleListSpaces(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
+// listSpacesIn is the input schema for list_spaces.
+type listSpacesIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"User's Google email address"`
+	PageSize        int    `json:"page_size,omitempty" jsonschema:"Number of spaces to return per page. Defaults to 100."`
+	SpaceType       string `json:"space_type,omitempty" jsonschema:"Type of spaces to filter: 'all', 'room', or 'dm'. Defaults to 'all'."`
+}
+
+func handleListSpaces(getClient httpClientFunc) mcp.ToolHandlerFor[listSpacesIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in listSpacesIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
 		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
+			return nil, nil, toolErr("user_google_email is required")
 		}
 
-		pageSize := request.GetInt("page_size", 100)
-		spaceType := request.GetString("space_type", "all")
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 100
+		}
+		spaceType := in.SpaceType
+		if spaceType == "" {
+			spaceType = "all"
+		}
 
 		svc, err := newChatService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		call := svc.Spaces.List().PageSize(int64(pageSize))
@@ -75,12 +85,12 @@ func handleListSpaces(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		resp, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing spaces: %v", err)), nil
+			return nil, nil, toolErr("listing spaces: %v", err)
 		}
 
 		spaces := resp.Spaces
 		if len(spaces) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No Chat spaces found for type '%s'.", spaceType)), nil
+			return textResult(fmt.Sprintf("No Chat spaces found for type '%s'.", spaceType))
 		}
 
 		var out strings.Builder
@@ -97,46 +107,54 @@ func handleListSpaces(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			fmt.Fprintf(&out, "\n- %s (ID: %s, Type: %s)", name, space.Name, spaceTypeActual)
 		}
 
-		return mcp.NewToolResultText(out.String()), nil
+		return textResult(out.String())
 	}
 }
 
 // --- get_messages ---
 
-func registerGetMessages(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("get_messages",
-		mcp.WithDescription("Retrieves messages from a Google Chat space."),
-		mcp.WithString("user_google_email", mcp.Description("User's Google email address")),
-		mcp.WithString("space_id", mcp.Required(), mcp.Description("The ID of the Chat space to retrieve messages from")),
-		mcp.WithNumber("page_size", mcp.Description("Number of messages to return per page. Defaults to 50.")),
-		mcp.WithString("order_by", mcp.Description("Sort order for messages. Defaults to 'createTime desc'.")),
-	)
-	s.AddTool(tool, handleGetMessages(getClient))
+func registerGetMessages(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "get_messages",
+		Description: "Retrieves messages from a Google Chat space.",
+	}
+	mcp.AddTool(s, tool, handleGetMessages(getClient))
 }
 
-func handleGetMessages(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		spaceID, err := request.RequireString("space_id")
-		if err != nil {
-			return mcp.NewToolResultError("space_id is required"), nil
-		}
+// getMessagesIn is the input schema for get_messages.
+type getMessagesIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"User's Google email address"`
+	SpaceID         string `json:"space_id" jsonschema:"The ID of the Chat space to retrieve messages from"`
+	PageSize        int    `json:"page_size,omitempty" jsonschema:"Number of messages to return per page. Defaults to 50."`
+	OrderBy         string `json:"order_by,omitempty" jsonschema:"Sort order for messages. Defaults to 'createTime desc'."`
+}
 
-		pageSize := request.GetInt("page_size", 50)
-		orderBy := request.GetString("order_by", "createTime desc")
+func handleGetMessages(getClient httpClientFunc) mcp.ToolHandlerFor[getMessagesIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getMessagesIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		spaceID := in.SpaceID
+
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 50
+		}
+		orderBy := in.OrderBy
+		if orderBy == "" {
+			orderBy = "createTime desc"
+		}
 
 		svc, err := newChatService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		// Get space info first
 		spaceInfo, err := svc.Spaces.Get(spaceID).Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("getting space info: %v", err)), nil
+			return nil, nil, toolErr("getting space info: %v", err)
 		}
 		spaceName := spaceInfo.DisplayName
 		if spaceName == "" {
@@ -149,12 +167,12 @@ func handleGetMessages(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			OrderBy(orderBy).
 			Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("listing messages: %v", err)), nil
+			return nil, nil, toolErr("listing messages: %v", err)
 		}
 
 		messages := resp.Messages
 		if len(messages) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No messages found in space '%s' (ID: %s).", spaceName, spaceID)), nil
+			return textResult(fmt.Sprintf("No messages found in space '%s' (ID: %s).", spaceName, spaceID))
 		}
 
 		var out strings.Builder
@@ -178,43 +196,41 @@ func handleGetMessages(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			fmt.Fprintf(&out, "\n  (Message ID: %s)\n", msg.Name)
 		}
 
-		return mcp.NewToolResultText(out.String()), nil
+		return textResult(out.String())
 	}
 }
 
 // --- send_message ---
 
-func registerSendMessage(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("send_message",
-		mcp.WithDescription("Sends a message to a Google Chat space."),
-		mcp.WithString("user_google_email", mcp.Description("User's Google email address")),
-		mcp.WithString("space_id", mcp.Required(), mcp.Description("The ID of the Chat space to send the message to")),
-		mcp.WithString("message_text", mcp.Required(), mcp.Description("The text content of the message to send")),
-		mcp.WithString("thread_key", mcp.Description("Optional thread key for threaded replies")),
-	)
-	s.AddTool(tool, handleSendMessage(getClient))
+func registerSendMessage(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "send_message",
+		Description: "Sends a message to a Google Chat space.",
+	}
+	mcp.AddTool(s, tool, handleSendMessage(getClient))
 }
 
-func handleSendMessage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		spaceID, err := request.RequireString("space_id")
-		if err != nil {
-			return mcp.NewToolResultError("space_id is required"), nil
-		}
-		messageText, err := request.RequireString("message_text")
-		if err != nil {
-			return mcp.NewToolResultError("message_text is required"), nil
-		}
+// sendMessageIn is the input schema for send_message.
+type sendMessageIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"User's Google email address"`
+	SpaceID         string `json:"space_id" jsonschema:"The ID of the Chat space to send the message to"`
+	MessageText     string `json:"message_text" jsonschema:"The text content of the message to send"`
+	ThreadKey       string `json:"thread_key,omitempty" jsonschema:"Optional thread key for threaded replies"`
+}
 
-		threadKey := request.GetString("thread_key", "")
+func handleSendMessage(getClient httpClientFunc) mcp.ToolHandlerFor[sendMessageIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in sendMessageIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		spaceID := in.SpaceID
+		messageText := in.MessageText
+		threadKey := in.ThreadKey
 
 		svc, err := newChatService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		msgBody := &chat.Message{
@@ -228,46 +244,51 @@ func handleSendMessage(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 
 		message, err := call.Do()
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("sending message: %v", err)), nil
+			return nil, nil, toolErr("sending message: %v", err)
 		}
 
 		result := fmt.Sprintf("Message sent to space '%s' by %s. Message ID: %s, Time: %s",
 			spaceID, email, message.Name, message.CreateTime)
 
-		return mcp.NewToolResultText(result), nil
+		return textResult(result)
 	}
 }
 
 // --- search_messages ---
 
-func registerSearchMessages(s *mcpserver.MCPServer, getClient httpClientFunc) {
-	tool := mcp.NewTool("search_messages",
-		mcp.WithDescription("Searches for messages in Google Chat spaces by text content."),
-		mcp.WithString("user_google_email", mcp.Description("User's Google email address")),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Search query text to find in messages")),
-		mcp.WithString("space_id", mcp.Description("Optional space ID to limit search to a specific space; if not provided, searches all accessible spaces")),
-		mcp.WithNumber("page_size", mcp.Description("Number of messages to return per page. Defaults to 25.")),
-	)
-	s.AddTool(tool, handleSearchMessages(getClient))
+func registerSearchMessages(s *mcp.Server, getClient httpClientFunc) {
+	tool := &mcp.Tool{
+		Name:        "search_messages",
+		Description: "Searches for messages in Google Chat spaces by text content.",
+	}
+	mcp.AddTool(s, tool, handleSearchMessages(getClient))
 }
 
-func handleSearchMessages(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		email, err := resolveEmail(request)
-		if err != nil {
-			return mcp.NewToolResultError("user_google_email is required"), nil
-		}
-		query, err := request.RequireString("query")
-		if err != nil {
-			return mcp.NewToolResultError("query is required"), nil
-		}
+// searchMessagesIn is the input schema for search_messages.
+type searchMessagesIn struct {
+	UserGoogleEmail string `json:"user_google_email,omitempty" jsonschema:"User's Google email address"`
+	Query           string `json:"query" jsonschema:"Search query text to find in messages"`
+	SpaceID         string `json:"space_id,omitempty" jsonschema:"Optional space ID to limit search to a specific space; if not provided, searches all accessible spaces"`
+	PageSize        int    `json:"page_size,omitempty" jsonschema:"Number of messages to return per page. Defaults to 25."`
+}
 
-		spaceID := request.GetString("space_id", "")
-		pageSize := request.GetInt("page_size", 25)
+func handleSearchMessages(getClient httpClientFunc) mcp.ToolHandlerFor[searchMessagesIn, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchMessagesIn) (*mcp.CallToolResult, any, error) {
+		email, err := resolveEmail(in.UserGoogleEmail)
+		if err != nil {
+			return nil, nil, toolErr("user_google_email is required")
+		}
+		query := in.Query
+
+		spaceID := in.SpaceID
+		pageSize := in.PageSize
+		if pageSize == 0 {
+			pageSize = 25
+		}
 
 		svc, err := newChatService(ctx, getClient, email)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 
 		type messageWithSpace struct {
@@ -287,7 +308,7 @@ func handleSearchMessages(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 				Filter(filter).
 				Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("searching messages: %v", err)), nil
+				return nil, nil, toolErr("searching messages: %v", err)
 			}
 			for _, msg := range resp.Messages {
 				results = append(results, messageWithSpace{msg: msg, spaceName: ""})
@@ -297,7 +318,7 @@ func handleSearchMessages(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			// Search across all accessible spaces
 			spacesResp, err := svc.Spaces.List().PageSize(100).Do()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("listing spaces for search: %v", err)), nil
+				return nil, nil, toolErr("listing spaces for search: %v", err)
 			}
 
 			// Limit to first 10 spaces to avoid timeout
@@ -326,7 +347,7 @@ func handleSearchMessages(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 		}
 
 		if len(results) == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("No messages found matching '%s' in %s.", query, searchContext)), nil
+			return textResult(fmt.Sprintf("No messages found matching '%s' in %s.", query, searchContext))
 		}
 
 		var out strings.Builder
@@ -357,6 +378,6 @@ func handleSearchMessages(getClient httpClientFunc) mcpserver.ToolHandlerFunc {
 			fmt.Fprintf(&out, "\n- [%s] %s in '%s': %s", createTime, sender, spaceName, text)
 		}
 
-		return mcp.NewToolResultText(out.String()), nil
+		return textResult(out.String())
 	}
 }
